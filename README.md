@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/mascot.svg" width="558" alt="A roughly drawn donut tells a little donut: do the thing. The little donut says ok.">
+  <img src="docs/images/mascot.svg" width="558" alt="A roughly drawn donut tells a donut hole: do the thing. The donut hole says ok.">
 </p>
 
 <h1 align="center">Donut</h1>

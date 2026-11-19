@@ -68,11 +68,10 @@ class UITests(unittest.TestCase):
         runs = [run for line in logo_segments() for run in line]
         self.assertIn(("ok", "orange"), runs)
         self.assertIn(("thing.", "orange"), runs)
-        # The little donut has one small round hole in its middle row, with sprinkles around it.
-        lines = LOGO.splitlines()
-        self.assertIn("()", lines[-3])
-        self.assertNotIn("(", lines[-4] + lines[-2])
-        self.assertNotIn(".--.", lines[-4])
+        # The little one is a donut hole: solid all through, sprinkles and no hole of its own.
+        hole = [line[36:] for line in LOGO.splitlines()[-5:]]
+        self.assertFalse(any(c in "()" for line in hole for c in line), hole)
+        self.assertIn("*", hole[2])
 
     def test_the_readme_shows_the_same_mascot_as_the_terminal(self):
         from pathlib import Path
@@ -85,7 +84,7 @@ class UITests(unittest.TestCase):
         self.assertEqual((root / "docs/images/mascot.svg").read_text(encoding="utf-8"), logo_svg())
         svg = logo_svg()
         self.assertIn('fill="#ffa818">ok</text>', svg)  # The same warm color as in the terminal.
-        self.assertIn(">()</text>", svg)
+        self.assertNotIn(">()</text>", svg)  # The little one is a donut hole, with no hole of its own.
 
     def test_setup_welcome_does_not_claim_new_installation(self):
         stream = io.StringIO()
