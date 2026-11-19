@@ -889,6 +889,7 @@ class Donut(App):
         self.turn_text, self.shown, self.message_start, self.turn_tools = "", 0, 0, []
         self.last_answer = ""
         self.picking = None
+        self.typing = None  # While a model's question waits for a typed answer, the next sent message answers it.
         self.follow = True  # Keep the transcript at its end until the user scrolls up.
         self.background_tasks = {}  # task id -> (kind, description) for shells and agents models left running
         self.threads = {}  # "plan", "solo", "review" -> the session holding that conversation now
@@ -1471,6 +1472,81 @@ class Donut(App):
         self.say(line)
         return decision
 
+    async def answer_questions(self, questions):
+        """Show a model's questions (Claude's AskUserQuestion, Codex's request_user_input) and collect answers.
+
+        questions: dicts with "id", "header", "question", "options" ([{"label", "description"}]), "multi"
+        (several options may be chosen), "other" (a typed answer is allowed) and "secret" (keep it off screen).
+        Returns {id: [answer, ...]}, or None when the user dismissed them, so the model is told no answer came.
+        """
+        answers = {}
+        for question in questions:
+            options = [o for o in question.get("options") or [] if isinstance(o, dict) and o.get("label")]
+            title = (question.get("header") or "Question").strip()
+            details = Text(question.get("question") or "", style="bold #ffffff")
+            subtitle = "Enter to choose · Esc to dismiss"
+            chosen = []
+            if not options:
+                typed = await self.read_answer(question)
+                if typed is None:
+                    return None
+                chosen = [typed]
+            elif question.get("multi"):
+                picked = set()
+                while True:
+                    rows = [
+                        (("[x] " if i in picked else "[ ] ") + o["label"], i, o.get("description") or "")
+                        for i, o in enumerate(options)
+                    ]
+                    if question.get("other"):
+                        rows.append(("Type my own answer", "other", ""))
+                    rows.append(("Done", "done", f"{len(picked)} chosen"))
+                    choice = await self.choose(title, rows, kind="approve", details=details, subtitle=subtitle)
+                    if choice is None:
+                        return None
+                    if choice == "done":
+                        break
+                    if choice == "other":
+                        typed = await self.read_answer(question)
+                        if typed is None:
+                            return None
+                        chosen.append(typed)
+                        break
+                    picked ^= {choice}
+                chosen = [options[i]["label"] for i in sorted(picked)] + chosen
+            else:
+                rows = [(o["label"], i, o.get("description") or "") for i, o in enumerate(options)]
+                if question.get("other"):
+                    rows.append(("Type my own answer", "other", ""))
+                choice = await self.choose(title, rows, kind="approve", details=details, subtitle=subtitle)
+                if choice is None:
+                    return None
+                if choice == "other":
+                    typed = await self.read_answer(question)
+                    if typed is None:
+                        return None
+                    chosen = [typed]
+                else:
+                    chosen = [options[choice]["label"]]
+            answers[question["id"]] = chosen
+            line = Text("  ? ", style=TEAL)
+            line.append(title + " · ", style=GRAY)
+            line.append("(hidden)" if question.get("secret") else ", ".join(chosen) or "(none)", style=ORANGE)
+            self.say(line)
+        return answers
+
+    async def read_answer(self, question):
+        """Wait for the user to type an answer in the prompt. Returns the text, or None if they cancelled."""
+        line = Text("  ? ", style=TEAL)
+        line.append(question.get("question") or "The model asks a question.", style="bold #ffffff")
+        self.say(line)
+        self.say(Text("    Type your answer and press Enter. Ctrl+C cancels.", style=DIM))
+        self.typing = asyncio.get_running_loop().create_future()
+        try:
+            return await self.typing
+        finally:
+            self.typing = None
+
     async def set_permission(self, mode, announce=True):
         """Apply a permission mode to every open session through the provider's own mechanism, and remember it."""
         if mode != self.permission:
@@ -1546,6 +1622,7 @@ class Donut(App):
             emit = lambda kind, data, key=usage_key(profile): self.event(kind, data, key, holder.get("session"))  # noqa: E731
             session = cls(self.project, profile, emit, self.approve)
             holder["session"] = session
+            session.ask = self.answer_questions  # Questions the model asks the user come back to this window.
             session.permission = self.permission
             session.read_only = purpose == "review"
             # Claude in Chrome is on unless /chrome off was saved; review conversations never get it.
@@ -1808,7 +1885,8 @@ class Donut(App):
         if not text:
             return
         editor.clear()
-        if not self.history or self.history[-1] != text:
+        answering = self.typing and not self.typing.done()  # An answer to a model's question stays out of history.
+        if not answering and (not self.history or self.history[-1] != text):
             self.history.append(text)
         self.history_at = None
         self.submit(text)
@@ -1816,6 +1894,9 @@ class Donut(App):
     def submit(self, text):
         """Run a message now, or, during a turn, queue it; commands that only show something run at once."""
         self.follow = True  # A new message returns to the end, wherever the view was left.
+        if self.typing and not self.typing.done():
+            self.typing.set_result(text)  # The answer to a model's question, not a new message.
+            return
         if not self.busy:
             self.cancelled = False  # Ctrl+C from here on cancels this message, even before its model is chosen.
             self.execute(text)
@@ -1922,6 +2003,8 @@ class Donut(App):
             return
         menu = self.query_one(Menu)
         self.cancelled = True  # Seen by a step that runs before the turn itself, such as auto choosing a model.
+        if self.typing and not self.typing.done():
+            self.typing.set_result(None)
         if self.picking and not self.picking.done():
             self.picking.set_result(None)
         elif menu.is_open:

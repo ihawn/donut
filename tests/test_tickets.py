@@ -324,6 +324,115 @@ class CodexPermissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(replies, [{"id": 7, "result": {"decision": "acceptForSession"}}])
 
 
+class ModelQuestionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_codex_request_user_input_is_answered_by_question_id(self):
+        from donut.sessions import CodexSession
+
+        replies, asked = [], []
+
+        async def ask(questions):
+            asked.extend(questions)
+            return {"stack": ["Native"], "name": ["leap"]}
+
+        session = CodexSession(Path("."), {}, lambda *event: None, None)
+        session.ask = ask
+
+        async def send(message):
+            replies.append(message)
+
+        session.send = send
+        params = {
+            "threadId": "t",
+            "turnId": "u",
+            "itemId": "i",
+            "isBlocking": True,
+            "questions": [
+                {
+                    "id": "stack",
+                    "header": "Stack",
+                    "question": "Native or cross-platform?",
+                    "isOther": True,
+                    "options": [{"label": "Native", "description": "Swift"}, {"label": "Cross", "description": "RN"}],
+                },
+                {"id": "name", "header": "Name", "question": "App name?", "isSecret": False, "options": None},
+            ],
+        }
+        await session.handle_request({"id": 9, "method": "item/tool/requestUserInput", "params": params})
+        self.assertEqual(
+            replies,
+            [{"id": 9, "result": {"answers": {"stack": {"answers": ["Native"]}, "name": {"answers": ["leap"]}}}}],
+        )
+        self.assertEqual(
+            [(q["id"], q["other"], q["multi"]) for q in asked], [("stack", True, False), ("name", True, False)]
+        )
+
+        async def dismiss(questions):
+            return None
+
+        session.ask = dismiss
+        await session.handle_request({"id": 10, "method": "item/tool/requestUserInput", "params": params})
+        self.assertEqual(replies[-1], {"id": 10, "result": {"answers": {}}})
+
+    async def test_codex_starts_with_questions_turned_on(self):
+        from donut import sessions
+
+        started = {}
+
+        async def fake_exec(*args, **kwargs):
+            started["args"] = args
+            raise RuntimeError("stop here")
+
+        with patch.object(sessions.asyncio, "create_subprocess_exec", fake_exec):
+            with self.assertRaises(RuntimeError):
+                await sessions.CodexSession(Path("."), {}, lambda *e: None, None).connect()
+        self.assertIn("features.default_mode_request_user_input=true", started["args"])
+
+    async def test_claude_ask_user_question_returns_answers_keyed_by_question(self):
+        from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
+        from donut.sessions import ClaudeSession
+
+        inputs = {
+            "questions": [
+                {
+                    "question": "How should I format the output?",
+                    "header": "Format",
+                    "options": [{"label": "Summary", "description": ""}, {"label": "Detailed", "description": ""}],
+                    "multiSelect": False,
+                },
+                {
+                    "question": "Which sections?",
+                    "header": "Sections",
+                    "options": [{"label": "Intro", "description": ""}, {"label": "End", "description": ""}],
+                    "multiSelect": True,
+                },
+            ]
+        }
+        asked = []
+
+        async def ask(questions):
+            asked.extend(questions)
+            return {"How should I format the output?": ["Summary"], "Which sections?": ["Intro", "End"]}
+
+        session = ClaudeSession(Path("."), {}, lambda *e: None, None)
+        session.ask = ask
+        result = await session.answer(inputs)
+        self.assertIsInstance(result, PermissionResultAllow)
+        self.assertEqual(result.updated_input["questions"], inputs["questions"])
+        self.assertEqual(
+            result.updated_input["answers"],
+            {"How should I format the output?": "Summary", "Which sections?": "Intro, End"},
+        )
+        self.assertEqual([(q["id"], q["multi"], q["other"]) for q in asked][1], ("Which sections?", True, True))
+
+        async def dismiss(questions):
+            return None
+
+        session.ask = dismiss
+        self.assertIsInstance(await session.answer(inputs), PermissionResultDeny)
+        session.ask = None  # No window to ask in.
+        self.assertIsInstance(await session.answer(inputs), PermissionResultDeny)
+
+
 class ReadOnlyProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_read_only_sessions_use_each_providers_read_only_mode(self):
         from donut.sessions import ClaudeSession, CodexSession, QwenSession
