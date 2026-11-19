@@ -378,6 +378,9 @@ class CodexSession:
         await self.reader
 
 
+MAX_MESSAGE_BYTES = 32 * 1024 * 1024
+
+
 class ClaudeSession:
     def __init__(self, project, profile, emit, approve):
         self.project, self.profile = project, profile
@@ -452,6 +455,8 @@ class ClaudeSession:
             else native_permission("claude", self.permission),
             can_use_tool=permission,
             include_partial_messages=True,
+            # The SDK stops at 1 MB for one message; a screenshot or a large tool result is larger than that.
+            max_buffer_size=MAX_MESSAGE_BYTES,
             resume=getattr(self, "resume_id", None) or None,
             effort=self.profile.get("effort") or None,
             # Lets /permissions or Shift+Tab switch this live session to Full access later. It bypasses
