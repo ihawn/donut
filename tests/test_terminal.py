@@ -454,6 +454,80 @@ class SlashMenuTests(unittest.IsolatedAsyncioTestCase):
                 lines = [strip.text for strip in app.query_one(RichLog).lines]
                 self.assertTrue(any("Denied Bash command" in line and "ls -la" in line for line in lines))
 
+    async def test_a_models_questions_are_answered_from_the_menu_or_by_typing(self):
+        colors = {
+            "id": "color",
+            "header": "Color",
+            "question": "Which color?",
+            "options": [{"label": "Red", "description": "warm"}, {"label": "Blue", "description": "cool"}],
+        }
+        parts = {
+            "id": "parts",
+            "header": "Parts",
+            "question": "Which parts?",
+            "options": [{"label": "Intro", "description": ""}, {"label": "End", "description": ""}],
+            "multi": True,
+        }
+        named = {"id": "name", "header": "Name", "question": "What should it be called?", "options": [], "other": True}
+        token = {"id": "token", "header": "Token", "question": "Paste the token", "secret": True}
+        with tempfile.TemporaryDirectory() as temp:
+            app = await self.run_app(temp)
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                answer = asyncio.ensure_future(app.answer_questions([colors, parts, named, token]))
+                await pilot.pause()
+                menu = app.query_one(Menu)
+                self.assertEqual((menu.kind, menu.border_title), ("approve", "Color"))
+                self.assertIn("Which color?", str(menu.query_one("#menu-details").render()))
+                self.assertEqual([row[0] for row in menu.visible_rows], ["Red", "Blue"])  # No typed answer offered.
+                await pilot.press("2")
+                await pilot.pause()
+                self.assertEqual(menu.border_title, "Parts")
+                await pilot.press("1")  # Toggle Intro,
+                await pilot.pause()
+                await pilot.press("2")  # then End,
+                await pilot.pause()
+                await pilot.press("1")  # and Intro off again.
+                await pilot.pause()
+                self.assertEqual(menu.visible_rows[-1][2], "1 chosen")
+                await pilot.press("3")  # Done.
+                await pilot.pause()
+                self.assertFalse(menu.is_open)  # No options: the answer is typed in the prompt.
+                await pilot.press(*"leap")
+                await pilot.press("enter")
+                await pilot.pause()
+                await pilot.press(*"s3cret")
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(
+                    await answer, {"color": ["Blue"], "parts": ["End"], "name": ["leap"], "token": ["s3cret"]}
+                )
+                self.assertEqual(self.sent, [])  # Typed answers are not sent to the model as messages,
+                self.assertNotIn("s3cret", app.history)  # nor kept in the prompt history.
+                lines = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+                self.assertIn("Color · Blue", lines)
+                self.assertIn("Token · (hidden)", lines)
+                self.assertNotIn("s3cret", lines)
+
+    async def test_dismissing_a_models_question_answers_nothing(self):
+        question = {"id": "q", "header": "Pick", "question": "Which?", "options": [{"label": "A"}, {"label": "B"}]}
+        typed = {"id": "t", "header": "Name", "question": "Name?", "options": []}
+        with tempfile.TemporaryDirectory() as temp:
+            app = await self.run_app(temp)
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                answer = asyncio.ensure_future(app.answer_questions([question]))
+                await pilot.pause()
+                await pilot.press("escape")
+                await pilot.pause()
+                self.assertIsNone(await answer)
+                answer = asyncio.ensure_future(app.answer_questions([typed]))
+                await pilot.pause()
+                await app.action_cancel()
+                await pilot.pause()
+                self.assertIsNone(await answer)
+                self.assertIsNone(app.typing)
+
     async def test_escape_denies_and_keeps_the_draft(self):
         with tempfile.TemporaryDirectory() as temp:
             app = await self.run_app(temp)

@@ -136,6 +136,7 @@ class CodexSession:
     def __init__(self, project, profile, emit, approve):
         self.project, self.profile = project, profile
         self.emit, self.approve = emit, approve
+        self.ask = None  # The terminal sets this: it shows the model's questions and returns the answers.
         self.pending = {}
         self.serial = 0
         self.thread = None
@@ -179,6 +180,10 @@ class CodexSession:
             shutil.which("codex") or "codex",
             "app-server",
             "--stdio",
+            # Lets the model ask the user questions outside plan mode; Donut answers them (item/tool/requestUserInput).
+            # A -c override, unlike --enable, is ignored by Codex versions that do not know the feature.
+            "-c",
+            "features.default_mode_request_user_input=true",
             cwd=self.project,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -293,6 +298,23 @@ class CodexSession:
         if method.endswith("/requestApproval") and ("commandExecution" in method or "fileChange" in method):
             decision = await self.approve(method, event.get("params", {}))
             await self.send({"id": event["id"], "result": {"decision": CODEX_DECISIONS.get(decision, "decline")}})
+        elif method == "item/tool/requestUserInput":
+            questions = [
+                {
+                    "id": q.get("id"),
+                    "header": q.get("header"),
+                    "question": q.get("question"),
+                    "options": q.get("options") or [],
+                    "multi": False,
+                    "other": bool(q.get("isOther")) or not q.get("options"),
+                    "secret": bool(q.get("isSecret")),
+                }
+                for q in event.get("params", {}).get("questions", [])
+            ]
+            answers = await self.ask(questions) if self.ask else None
+            # No answers (dismissed, or no window to ask in) tells Codex the user did not answer.
+            result = {key: {"answers": value} for key, value in (answers or {}).items()}
+            await self.send({"id": event["id"], "result": {"answers": result}})
         else:
             self.emit("error", "Unsupported provider interaction: " + method + "; use /native.")
             await self.send(
@@ -382,6 +404,7 @@ class ClaudeSession:
     def __init__(self, project, profile, emit, approve):
         self.project, self.profile = project, profile
         self.emit, self.approve = emit, approve
+        self.ask = None  # The terminal sets this: it shows the model's questions and returns the answers.
         self.usage = {}
         self.permission = "ask"
 
@@ -433,6 +456,8 @@ class ClaudeSession:
         from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions, PermissionResultAllow, PermissionResultDeny
 
         async def permission(name, inputs, context):
+            if name == "AskUserQuestion":
+                return await self.answer(inputs)
             if await self.approve(name, inputs) in ("yes", "always"):
                 return PermissionResultAllow(updated_input=inputs)
             return PermissionResultDeny(message="User declined")
@@ -469,6 +494,31 @@ class ClaudeSession:
         self.info = await self.client.get_server_info() or {}
         self.inbox, self.in_turn = asyncio.Queue(), False
         self.pump = asyncio.create_task(self._pump())
+
+    async def answer(self, inputs):
+        """AskUserQuestion: show Claude's questions and return the user's answers as the tool's input."""
+        from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
+
+        asked = inputs.get("questions") or []
+        questions = [
+            {
+                "id": q.get("question"),
+                "header": q.get("header"),
+                "question": q.get("question"),
+                "options": q.get("options") or [],
+                "multi": bool(q.get("multiSelect")),
+                "other": True,  # Claude Code always offers a typed answer ("Other").
+                "secret": False,
+            }
+            for q in asked
+            if isinstance(q, dict) and q.get("question")
+        ]
+        answers = await self.ask(questions) if self.ask else None
+        if answers is None:
+            return PermissionResultDeny(message="The user dismissed the question without answering.")
+        # Claude Code takes each answer keyed by the question text; several choices are joined with ", ".
+        joined = {key: ", ".join(value) for key, value in answers.items()}
+        return PermissionResultAllow(updated_input={**inputs, "questions": asked, "answers": joined})
 
     def _track_task(self, message):
         """Report background shells and agents Claude Code starts and ends. Returns whether message was one."""
