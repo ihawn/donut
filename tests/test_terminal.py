@@ -1658,6 +1658,32 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIs(load().get("chrome"), True)
             self.assertNotIn("chrome", str(app.query_one("#status").render()))
 
+    async def test_handholding_is_a_saved_level_that_every_plan_prompt_carries(self):
+        from donut.config import load
+
+        app = self.make_app()
+        async with app.run_test(size=(160, 40)) as pilot:
+            await pilot.pause()
+            self.assertNotIn("handholding", str(app.query_one("#status").render()))  # Medium, the default.
+            await self.send(pilot, app, "/handholding high")
+            self.assertEqual(app.config.get("handholding"), "high")
+            self.assertEqual(load().get("handholding"), "high")  # Saved for the next window.
+            self.assertIn("handholding high", str(app.query_one("#status").render()))
+            await self.send(pilot, app, "/handholding extreme")
+            self.assertEqual(app.config.get("handholding"), "high")  # An unknown level changes nothing.
+            await self.send(pilot, app, "plan the wall jump")
+            await pilot.pause(0.2)
+            planner = next(iter(app.sessions.values()))
+            self.assertIn("Handholding is high", planner.calls[-1])
+            self.assertIn("quote the exact existing lines", planner.calls[-1])
+            await self.send(pilot, app, "/handholding low")
+            await self.send(pilot, app, "plan the dash")
+            await pilot.pause(0.2)
+            self.assertIn("Handholding is low", planner.calls[-1])
+            self.assertIn("Ticket scope can be larger", planner.calls[-1])
+            await self.send(pilot, app, "/handholding medium")
+            self.assertNotIn("handholding", str(app.query_one("#status").render()))
+
     async def test_verbosity_changes_what_is_shown_never_what_is_sent(self):
         def turn(app):
             app.turn_text, app.shown, app.message_start = "", 0, 0

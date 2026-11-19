@@ -32,7 +32,7 @@ from .summaries import claude_context, codex_context, is_connected, mcp_servers,
 from .sessions import ClaudeSession, CodexSession, QwenSession
 from .planner_output import ticket_snapshot
 from .install_skills import install
-from . import background, effort, plugins, ponytail, routing, spend, tickets, workspace
+from . import background, effort, handholding, plugins, ponytail, routing, spend, tickets, workspace
 from .platform import copy_native, open_window, window_command
 from .platform import process_options
 from .providers import PERMISSION_CYCLE, PERMISSION_MODES, ollama_base_url
@@ -254,6 +254,7 @@ INSTANT_COMMANDS = {
     "/routing",
     "/focus",
     "/chrome",
+    "/handholding",
     "/next",
     "/prev",
 }
@@ -272,6 +273,7 @@ COMPLEX_COMMANDS = {
     "/worker",
     "/reviewer",
     "/soloist",
+    "/handholding",
     "/session",
     "/next",
     "/prev",
@@ -341,6 +343,7 @@ COMMANDS = [
     ("/worker", "Choose the worker's account and model"),
     ("/reviewer", "Choose who reviews: same as planner, any model, or off"),
     ("/soloist", "Choose the soloist's account and model"),
+    ("/handholding", "How small and spelled-out the planner makes tickets: low, medium or high (for weak workers)"),
     ("/model", "Choose the model for the current mode"),
     ("/harder", "Auto picked too small a model: move this conversation one model up"),
     ("/routing", "Show the models auto chooses from and what it picked"),
@@ -1216,6 +1219,8 @@ class Donut(App):
             permission.append(f"   {self.verbosity}", style=DIM)
         if not self.chrome_on:
             permission.append("   chrome off", style=DIM)
+        if not self.simple and handholding.level(self.config) != handholding.DEFAULT:
+            permission.append(f"   handholding {handholding.level(self.config)}", style=DIM)
         entries.append(permission)
         if not self.simple:
             session = Text("session ", style=DIM)
@@ -2128,6 +2133,22 @@ class Donut(App):
                 self.say("  Use /chrome [on|off].", DIM)
             else:
                 await self.set_chrome(args[0] == "on" if args else not self.chrome_on)
+        elif name == "/handholding":
+            current = handholding.level(self.config)
+            if args and args[0] in handholding.LEVELS:
+                chosen = args[0]
+            elif args:
+                self.say("  Use /handholding [low|medium|high].", DIM)
+                chosen = None
+            else:
+                rows = [(label, key, description) for key, (label, description, _) in handholding.LEVELS.items()]
+                chosen = await self.choose(
+                    f"How much the planner's tickets hold the worker's hand · now {handholding.LEVELS[current][0]}",
+                    rows,
+                    subtitle="Higher means smaller, more exact tickets, for small or weak worker models",
+                )
+            if chosen:
+                await self.set_handholding(chosen)
         elif name == "/verbosity":
             if args and args[0] in VERBOSITY:
                 chosen = args[0]
@@ -2176,7 +2197,7 @@ class Donut(App):
             )
         elif name == "/help":
             self.say(
-                "/plan · /work [next COUNT] [parallel N] [checkpoint] · /review · /solo · /resume · /session [NAME|new] · /next [COUNT] · /prev [COUNT] · /project [PATH] · /planner · /worker · /reviewer [ALIAS|planner|off] · /soloist · /model · /permissions [ask|accept_edits|auto|full] · /auto · /verbosity [quiet|normal|verbose|full] · /chrome [on|off] · /usage · /plugin · /mcp · /context · /clear (or /new) · /ponytail band · /copy · /login · /native · /harder · /routing · /simple · /exit\n!COMMAND runs a shell command in the project; the model sees its output with your next message. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Installed plugin and skill commands (such as Ponytail's) are listed under / and forwarded to the selected session in its own syntax. Use /native for built-ins requiring the provider’s own UI."
+                "/plan · /work [next COUNT] [parallel N] [checkpoint] · /review · /solo · /resume · /session [NAME|new] · /next [COUNT] · /prev [COUNT] · /project [PATH] · /planner · /worker · /reviewer [ALIAS|planner|off] · /soloist · /handholding [low|medium|high] · /model · /permissions [ask|accept_edits|auto|full] · /auto · /verbosity [quiet|normal|verbose|full] · /chrome [on|off] · /usage · /plugin · /mcp · /context · /clear (or /new) · /ponytail band · /copy · /login · /native · /harder · /routing · /simple · /exit\n!COMMAND runs a shell command in the project; the model sees its output with your next message. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Installed plugin and skill commands (such as Ponytail's) are listed under / and forwarded to the selected session in its own syntax. Use /native for built-ins requiring the provider’s own UI."
             )
         elif name in ("/plugin", "/mcp", "/context"):
             session = await self.session(self.selected[self.role], self.profiles[self.role], self.purpose)
@@ -2348,6 +2369,22 @@ class Donut(App):
                 DIM,
             )
         self.say("  It applies to new conversations: /clear starts one. /work uses it from its next run.", DIM)
+        self.status()
+
+    async def set_handholding(self, level):
+        """Save how small and spelled-out the planner makes tickets; every planning prompt carries it."""
+        self.config["handholding"] = level
+        try:
+            config = load()
+            config["handholding"] = level
+            save(config)
+        except (ValueError, OSError) as error:
+            self.say(f"Handholding applies to this session only: {error}", DIM)
+        label, description, _ = handholding.LEVELS[level]
+        self.say(Text(f"  Handholding · {label}", style=f"bold {ORANGE}") + Text(f"  {description}", style=DIM))
+        self.say(
+            "  It applies to tickets planned from now on (/plan and donut --plan); existing tickets are kept.", DIM
+        )
         self.status()
 
     async def set_verbosity(self, level):
@@ -2838,7 +2875,10 @@ class Donut(App):
             f"tickets folder alone. Respect on_hold and blocked lanes and reserve their identities. Record standing "
             f"permissions and decisions the user gives in {folder}consents.md. "
             "Reply with the answer or result first, in a few lines unless asked for detail; give status as one table; "
-            "do not narrate your steps. Donut lists created tickets. User request:\n" + text
+            "do not narrate your steps. Donut lists created tickets. "
+            + handholding.instruction(self.config)
+            + " User request:\n"
+            + text
         )
         self.say(Text("> " + text, style=f"bold {ORANGE}"))
         self.turn_text, self.shown, self.message_start, self.turn_tools = "", 0, 0, []

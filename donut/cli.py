@@ -13,7 +13,7 @@ from .runner import VERIFY_FIXES, run_agent, run_batch
 from .planner_output import ticket_snapshot, show_created_tickets
 from .setup import setup, discover
 from .ui import banner, welcome, release_version, paint
-from . import workspace
+from . import handholding, workspace
 
 try:
     import readline  # noqa: F401  # Makes input() support Up/Down history and line editing; absent on Windows.
@@ -32,6 +32,10 @@ def plan_session(profile, alias, project, request=None, session=None):
         f"Planner: {alias} ({profile.get('model') or profile['engine'] + ' default'})\nProject: {project}\n"
         f"Tickets: {folder}\nLogs: {run}"
     )
+    try:
+        guidance = handholding.instruction(load())  # /handholding: how small and exact the tickets are.
+    except (ValueError, OSError):
+        guidance = handholding.instruction({})
     interactive = request is None
     if interactive:
         print("Describe what to plan. Enter /exit to leave (or Ctrl-D; Windows: Ctrl-Z then Enter).")
@@ -58,7 +62,9 @@ def plan_session(profile, alias, project, request=None, session=None):
             "Never queue work depending on held or blocked tickets. Do not implement, "
             "commit or push. Your final response must be at most two short sentences describing what you did, "
             "or a concise clarification question if needed. Do not repeat ticket lists or technical details; "
-            "Donut will list the created tickets. Earlier user requests in this planning session:\n"
+            "Donut will list the created tickets. "
+            + guidance
+            + " Earlier user requests in this planning session:\n"
             + json.dumps(history)
             + "\nUser request:\n"
             + request

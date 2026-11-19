@@ -32,6 +32,26 @@ class CLITests(unittest.TestCase):
         models = {alias: profile["model"] for alias, profile in load()["aliases"].items()}
         self.assertEqual(models, {"claude": "claude-opus-5-5", "codex": "gpt-6.1-mini", "short": "opus"})
 
+    def test_donut_plan_tells_the_planner_the_saved_handholding_level(self):
+        from donut.cli import plan_session
+
+        save({"aliases": {"worker": {"engine": "codex", "model": ""}}, "handholding": "high"})
+        project = self.root / "app"
+        project.mkdir()
+        prompts = []
+        with (
+            patch("donut.cli.install"),
+            patch("donut.cli.activate"),
+            patch("donut.cli.state_dir", return_value=self.root / "state"),
+            patch(
+                "donut.cli.run_agent", side_effect=lambda profile, project, prompt, *a, **k: prompts.append(prompt) or 0
+            ),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(plan_session({"engine": "codex"}, "worker", project, "add a dash"), 0)
+        self.assertIn("Handholding is high", prompts[0])
+        self.assertIn("quote the exact existing lines", prompts[0])
+
     def test_version_flags_need_no_project_or_config(self):
         for flag in ("-v", "--version"):
             output = io.StringIO()

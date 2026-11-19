@@ -41,7 +41,7 @@ A worker cannot fix a wrong ticket, so prove the ticket can pass before you writ
 
 ## Ticket contents
 
-Each ticket must work in a fresh context. Include exact paths, members, code anchors, dependency signatures, preflight checks, and explicit expected test output. Never invent APIs or assume earlier session memory. Keep one behavior per ticket, preferably ≤2 implementation files and ~40 changed lines; split larger or conceptual changes into independently verifiable steps. Use the project's builders for generated files (including Unity scenes).
+Each ticket must work in a fresh context. Include exact paths, members, code anchors, dependency signatures, preflight checks, and explicit expected test output. Never invent APIs or assume earlier session memory. Keep one behavior per ticket, preferably ≤2 implementation files and ~40 changed lines; split larger or conceptual changes into independently verifiable steps. When the request states a Handholding level, its ticket size and detail replace this guideline. Use the project's builders for generated files (including Unity scenes).
 
 Use these sections:
 - Title and a short user-facing description.
