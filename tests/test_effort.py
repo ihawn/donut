@@ -268,6 +268,8 @@ class ClaudeLaunchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen[1].extra_args, {})  # Review stays read-only.
         self.assertEqual(seen[1].permission_mode, "plan")
         self.assertEqual(seen[0].setting_sources, ["user", "project", "local"])
+        # One message can be a screenshot or a large tool result, far above the SDK's 1 MB default.
+        self.assertEqual(seen[0].max_buffer_size, 32 * 1024 * 1024)
         # A one-question session (auto's rating) loads no settings, connectors or tools: a far smaller prompt.
         session = ClaudeSession(Path("."), {"model": "opus"}, lambda *e: None, None)
         session.read_only = session.bare = True
