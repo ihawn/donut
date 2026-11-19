@@ -24,7 +24,7 @@ LOGO = r"""
     |  o   +   \        /    *     |              |/
      \   *      '-.__.-'  o   +   /           .-''''''-.
       '.    +    o    *    o    .'           / o   *  + \
-        '-._   *    +   o   _.-'            | +   ()   o |
+        '-._   *    +   o   _.-'            | +  *  +  o |
             '-.__________.-'                 \ *   o  + /
                                               '-.____.-'
 """[1:]
@@ -92,7 +92,7 @@ def logo_svg():
     height = len(rows) * line + 2 * pad
     out = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}" '
-        'role="img" aria-label="A roughly drawn donut tells a little donut: do the thing. The little donut says ok.">',
+        'role="img" aria-label="A roughly drawn donut tells a donut hole: do the thing. The donut hole says ok.">',
         f'<rect width="{width}" height="{height}" rx="10" fill="#101820"/>',
         '<g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" xml:space="preserve">',
     ]

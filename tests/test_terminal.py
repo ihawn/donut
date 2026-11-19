@@ -14,6 +14,7 @@ from donut.terminal import dropped_images, pasted_image, Donut, Draft, Menu, Opt
 # Never start real providers from the background usage refresh during tests.
 Donut.AUTO_REFRESH_QUOTAS = False
 Donut.ASK_INTERFACE = False  # The first-open question has its own test.
+Donut.START_MODE = "plan"  # These tests begin in plan mode; the solo start has its own test.
 
 
 def setUpModule():
@@ -1038,6 +1039,34 @@ class ModeAndRoleTests(unittest.IsolatedAsyncioTestCase):
 
     def menu_open(self):
         return self.app.query_one(Menu).is_open
+
+    async def test_donut_starts_in_solo_and_the_first_message_asks_for_a_soloist(self):
+        from donut.config import load
+
+        with patch.object(Donut, "START_MODE", "solo"):
+            app = Donut(Path(self.temp.name))
+        app.session, self.app = self.app.session, app
+        async with app.run_test() as pilot:
+            self.assertEqual(app.mode, "solo")
+            self.assertIn("SOLO", str(app.query_one("#status").render()))
+            await self.send(pilot, "rename jump() to leap()")
+            self.assertTrue(self.menu_open())  # No soloist yet, so the first message asks.
+            self.assertIn("soloist", app.query_one(Menu).border_title)
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            self.assertEqual(load()["roles"]["solo"], {"alias": "claude", "model": "claude-sonnet-5-5"})
+            self.assertEqual(self.sessions[("claude@solo", "claude-sonnet-5-5")].calls, ["rename jump() to leap()"])
+            await self.send(pilot, "now rename land too")
+            self.assertFalse(self.menu_open())  # Chosen once; not asked again.
+            self.assertEqual(
+                self.sessions[("claude@solo", "claude-sonnet-5-5")].calls,
+                ["rename jump() to leap()", "now rename land too"],
+            )
+
+    async def test_a_model_alias_on_the_command_line_is_the_soloist_too(self):
+        with patch.object(Donut, "START_MODE", "solo"):
+            app = Donut(Path(self.temp.name), alias="local")
+        self.assertEqual((app.mode, app.selected["solo"], app.profiles["solo"]["model"]), ("solo", "local", "qwen3.6"))
 
     async def test_solo_asks_for_a_soloist_once_then_talks_to_it_directly(self):
         from donut.config import load

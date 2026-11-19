@@ -9,6 +9,7 @@ from donut.terminal import Donut, Draft
 
 Donut.AUTO_REFRESH_QUOTAS = False
 Donut.ASK_INTERFACE = False  # The first-open question has its own test.
+Donut.START_MODE = "plan"  # These tests begin in plan mode; the solo start has its own test.
 
 
 class Provider:

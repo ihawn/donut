@@ -792,6 +792,7 @@ class Donut(App):
     QUOTA_REFRESH_SECONDS = 300
     AUTO_REFRESH_QUOTAS = True  # Tests turn this off so no provider is started in the background.
     ASK_INTERFACE = True  # Ask simple or complex the first time Donut opens; tests turn this off.
+    START_MODE = "solo"  # Donut opens in solo mode, like Claude Code; /plan switches. Older tests start in plan.
     ENABLE_COMMAND_PALETTE = False  # The inline slash menu replaces Textual's palette.
     CSS = f"""
     Screen {{background: #101820;}}
@@ -835,7 +836,7 @@ class Donut(App):
         self.entered_session = session is not None
         self.task_title = ""  # Window title from the first chat message; the tickets folder keeps its name.
         self.config = load()
-        self.mode = "plan"  # plan, work, review or solo
+        self.mode = self.START_MODE  # plan, work, review or solo
         aliases = self.config.get("aliases", {})
         if alias and alias not in aliases:
             raise ValueError("Unknown model alias: " + alias)
@@ -851,7 +852,8 @@ class Donut(App):
         saved_work = ((self.config.get("roles") or {}).get("work") or {}).get("alias")
         if not alias and saved_work == routing.AUTO and routing.AUTO not in aliases and ladder:
             self.selected["work"], self.profiles["work"] = routing.AUTO, ladder[0]
-        soloist = role_choice(self.config, "solo")  # No default: /solo asks the first time.
+        # No default soloist: the first solo message asks. donut -m ALIAS makes ALIAS the soloist too.
+        soloist = (alias, aliases[alias]) if alias else role_choice(self.config, "solo")
         self.selected["solo"], self.profiles["solo"] = (
             (soloist[0], copy.deepcopy(soloist[1])) if soloist else (None, {})
         )
@@ -1980,6 +1982,11 @@ class Donut(App):
                 self.turn_finished()
             return
         unset = not self.selected[self.role] and not (self.role == "solo" and self.auto)
+        if unset and self.mode == "solo" and self.config.get("aliases") and not text.startswith("/"):
+            # Donut starts in solo, so the first message asks for a soloist when none is set.
+            unset = not await self.ensure_role("solo")
+            if unset:
+                return
         if unset and not text.startswith(("/help", "/exit", "/quit", "/permissions", "/auto", "/simple", "/complex")):
             self.say("Run donut setup to configure an account first.")
             return
