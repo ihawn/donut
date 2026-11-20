@@ -1,0 +1,35 @@
+[package]
+name = "donut-cli"
+version = "0.3.0"
+edition = "2024"
+description = "Fresh-context coding agents, one swim-lane ticket at a time"
+license = "MIT"
+repository = "https://github.com/ihawn/Donut"
+readme = "README.md"
+rust-version = "1.85"
+
+[[bin]]
+name = "donut"
+path = "src/main.rs"
+
+[[bin]]
+name = "qwen-build-next"
+path = "src/bin/qwen-build-next.rs"
+
+[lib]
+name = "donut"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+regex = "1"
+tempfile = "3"
+
+[dev-dependencies]
+
+[profile.release]
+lto = "thin"
+strip = true
