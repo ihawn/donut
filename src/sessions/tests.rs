@@ -1091,7 +1091,8 @@ done
         next.contains("too many turns")
             || next.contains("exit code")
             || next.contains("terminated")
-            || next.contains("not ready for writing"),
+            || next.contains("not ready for writing")
+            || next.contains("Failed to write to process stdin"),
         "{next}"
     );
     session.close().unwrap();
