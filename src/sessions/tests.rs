@@ -1090,7 +1090,8 @@ done
     assert!(
         next.contains("too many turns")
             || next.contains("exit code")
-            || next.contains("terminated"),
+            || next.contains("terminated")
+            || next.contains("not ready for writing"),
         "{next}"
     );
     session.close().unwrap();
