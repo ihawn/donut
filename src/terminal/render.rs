@@ -1468,7 +1468,7 @@ pub fn save_pasted_image(ext: &str, data: &[u8]) -> std::io::Result<String> {
         n += 1;
     };
     std::fs::write(&path, data)?;
-    Ok(std::fs::canonicalize(&path)?.to_string_lossy().into_owned())
+    Ok(dunce::canonicalize(&path)?.to_string_lossy().into_owned())
 }
 
 /// Python's `shlex.quote`.
@@ -1568,7 +1568,7 @@ mod tests {
     }
 
     fn shot(temp: &Path) -> String {
-        let dir = std::fs::canonicalize(temp).unwrap();
+        let dir = dunce::canonicalize(temp).unwrap();
         let shot = dir.join("shot one.png");
         std::fs::write(&shot, b"x").unwrap();
         std::fs::write(dir.join("notes.txt"), b"x").unwrap();
@@ -1579,7 +1579,7 @@ mod tests {
     fn test_dropped_forms() {
         let f = fixture();
         let shot = shot(f.temp.path());
-        let project = std::fs::canonicalize(f.temp.path()).unwrap();
+        let project = dunce::canonicalize(f.temp.path()).unwrap();
         let mut forms = vec![
             format!("'{shot}'"),
             format!("\"{shot}\""),

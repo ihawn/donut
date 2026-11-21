@@ -34,13 +34,15 @@ struct Env {
     saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
 }
 
-const ENV_KEYS: [&str; 7] = [
+const ENV_KEYS: [&str; 9] = [
     "XDG_CONFIG_HOME",
     "XDG_STATE_HOME",
     "CLAUDE_CONFIG_DIR",
     "CODEX_HOME",
     "DONUT_PROFILE",
     "TMPDIR",
+    "TMP",
+    "TEMP",
     "DONUT_VERBOSITY",
 ];
 
@@ -867,7 +869,9 @@ fn test_the_input_box_shows_what_the_turns_cost() {
 fn test_dropped_paste_inserts_quoted_path() {
     let env = env();
     let (app, _) = setup(&env, claude_config());
-    let shot = env.project().canonicalize().unwrap().join("shot one.png");
+    let shot = dunce::canonicalize(env.project())
+        .unwrap()
+        .join("shot one.png");
     std::fs::write(&shot, b"x").unwrap();
     let shot = shot.to_string_lossy().into_owned();
     app.handle_paste(&format!("\"{shot}\"")); // The quoted form every platform pastes.
@@ -880,11 +884,18 @@ fn test_dropped_paste_inserts_quoted_path() {
     assert_eq!(draft_text(&app), "hello world");
 }
 
+/// Point `std::env::temp_dir` somewhere else: TMPDIR on Unix, TMP and TEMP on Windows.
+fn set_temp_dir(path: &Path) {
+    for key in ["TMPDIR", "TMP", "TEMP"] {
+        unsafe { std::env::set_var(key, path) };
+    }
+}
+
 #[test]
 fn test_pasted_image_paste_inserts_saved_path() {
     use base64::Engine;
     let env = env();
-    unsafe { std::env::set_var("TMPDIR", env.temp.path()) };
+    set_temp_dir(env.temp.path());
     let (app, _) = setup(&env, claude_config());
     let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
     bytes.extend(vec![b'0'; 200]);
@@ -902,7 +913,7 @@ fn test_pasted_image_paste_inserts_saved_path() {
     // A temp folder that cannot be made: the text goes in unchanged.
     let blocker = env.temp.path().join("blocker");
     std::fs::write(&blocker, b"x").unwrap();
-    unsafe { std::env::set_var("TMPDIR", blocker.join("inner")) };
+    set_temp_dir(&blocker.join("inner"));
     app.handle_paste(&png);
     assert_eq!(draft_text(&app), png);
 }
@@ -1201,7 +1212,7 @@ fn json_files(home: &Path) -> Vec<String> {
                     path.strip_prefix(base)
                         .unwrap()
                         .to_string_lossy()
-                        .into_owned(),
+                        .replace('\\', "/"),
                 );
             }
         }
@@ -1225,12 +1236,7 @@ fn test_the_worker_of_a_named_profile_finds_its_configuration() {
         Err(std::io::Error::other("stop here"))
     }));
     assert!(app.work_tickets("next 1").is_err());
-    assert_eq!(
-        seen.lock().unwrap()[0],
-        [Path::new("donut/profiles/personal.json")
-            .to_string_lossy()
-            .into_owned()]
-    );
+    assert_eq!(seen.lock().unwrap()[0], ["donut/profiles/personal.json"]);
 }
 
 #[test]
@@ -2506,7 +2512,7 @@ fn test_a_model_waiting_on_a_command_is_woken_when_it_exits() {
     app.st().rec_mut(id).unwrap().donut_waits = true;
     let replies: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![
         "The build passed.".to_string(),
-        "Started the build.\n\nDONUT-WAIT: sh -c \"echo 'build ok'\"".to_string(),
+        "Started the build.\n\nDONUT-WAIT: echo build ok".to_string(),
     ]));
     let sink = Arc::clone(&replies);
     planner.set_hook(move |fake, _| {

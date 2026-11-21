@@ -151,9 +151,7 @@ pub fn split_scope(
     if scope.is_empty() {
         return (files, Vec::new());
     }
-    let resolved = project
-        .canonicalize()
-        .unwrap_or_else(|_| project.to_path_buf());
+    let resolved = dunce::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
     let prefix = resolved.to_string_lossy().trim_end_matches('/').to_string() + "/";
     let wanted: Vec<String> = scope
         .iter()

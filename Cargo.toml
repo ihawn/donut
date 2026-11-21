@@ -42,6 +42,7 @@ pulldown-cmark = "0.13.6"
 unicode-width = "0.2.0"
 base64 = "0.23.1"
 shlex = "2.0.1"
+dunce = "1.0.5"
 
 [dev-dependencies]
 

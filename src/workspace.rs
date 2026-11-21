@@ -202,10 +202,16 @@ mod tests {
 
     fn set_mtime(path: &Path, seconds: u64) {
         let when = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
-        std::fs::File::open(path)
-            .unwrap()
-            .set_modified(when)
-            .unwrap();
+        let mut options = std::fs::OpenOptions::new();
+        #[cfg(windows)]
+        {
+            // Windows needs write access and backup semantics to open a folder and set its time.
+            use std::os::windows::fs::OpenOptionsExt;
+            options.write(true).custom_flags(0x0200_0000);
+        }
+        #[cfg(not(windows))]
+        options.read(true);
+        options.open(path).unwrap().set_modified(when).unwrap();
     }
 
     #[test]

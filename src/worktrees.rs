@@ -343,6 +343,8 @@ mod tests {
         git_checked(&project, ["init", "-q", "-b", "main"]).unwrap();
         git_checked(&project, ["config", "user.email", "t@example.com"]).unwrap();
         git_checked(&project, ["config", "user.name", "T"]).unwrap();
+        // Windows git defaults to autocrlf, which would turn the patch's LF files into CRLF.
+        git_checked(&project, ["config", "core.autocrlf", "false"]).unwrap();
         std::fs::write(project.join("app.py"), "print(1)\n").unwrap();
         git_checked(&project, ["add", "-A"]).unwrap();
         git_checked(&project, ["commit", "-q", "-m", "start"]).unwrap();

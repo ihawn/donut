@@ -91,15 +91,20 @@ pub struct Started {
 
 /// Start a shell command in the project in its own process group (so Ctrl+C can stop the whole group).
 pub fn start(command: &str, project: &Path) -> std::io::Result<Started> {
-    let mut shell = if cfg!(windows) {
-        let mut shell = Command::new("cmd");
-        shell.arg("/C").arg(format!("({command}) 2>&1"));
-        shell
-    } else {
-        let mut shell = Command::new("sh");
+    let mut shell;
+    #[cfg(windows)]
+    {
+        // Like Python's `create_subprocess_shell`: `cmd /c "<command>"`, with the command text passed
+        // through untouched. Rust's usual argument quoting would escape the quotes inside the command.
+        use std::os::windows::process::CommandExt;
+        shell = Command::new("cmd");
+        shell.arg("/C").raw_arg(format!("\"({command}) 2>&1\""));
+    }
+    #[cfg(not(windows))]
+    {
+        shell = Command::new("sh");
         shell.arg("-c").arg(format!("exec 2>&1\n{command}"));
-        shell
-    };
+    }
     shell
         .current_dir(project)
         .stdin(Stdio::null())
@@ -234,22 +239,26 @@ mod tests {
     #[test]
     fn test_wait_for_returns_code_and_output() {
         let temp = tempfile::tempdir().unwrap();
-        let (code, output) =
-            wait_for("echo $((41 + 1))", temp.path(), Duration::from_secs(60)).unwrap();
+        let (echo, sleep) = if cfg!(windows) {
+            ("echo 42", "ping -n 6 127.0.0.1 > nul")
+        } else {
+            ("echo $((41 + 1))", "sleep 5")
+        };
+        let (code, output) = wait_for(echo, temp.path(), Duration::from_secs(60)).unwrap();
         assert_eq!((code, output.trim()), (Some(0), "42"));
-        let (code, _) = wait_for("sleep 5", temp.path(), Duration::from_millis(300)).unwrap();
+        let (code, _) = wait_for(sleep, temp.path(), Duration::from_millis(300)).unwrap();
         assert_eq!(code, None);
     }
 
     #[test]
     fn test_wait_for_merges_stderr_and_reports_the_exit_code() {
         let temp = tempfile::tempdir().unwrap();
-        let (code, output) = wait_for(
-            "echo out; echo err >&2; exit 3",
-            temp.path(),
-            Duration::from_secs(60),
-        )
-        .unwrap();
+        let command = if cfg!(windows) {
+            "echo out& echo err 1>&2& exit 3"
+        } else {
+            "echo out; echo err >&2; exit 3"
+        };
+        let (code, output) = wait_for(command, temp.path(), Duration::from_secs(60)).unwrap();
         assert_eq!(code, Some(3));
         assert!(output.contains("out") && output.contains("err"));
     }

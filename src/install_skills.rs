@@ -259,7 +259,7 @@ pub fn main(args: &[String]) -> i32 {
             None if project == "~" => home.clone(),
             None => PathBuf::from(&project),
         };
-        let project = expanded.canonicalize().unwrap_or(expanded);
+        let project = dunce::canonicalize(&expanded).unwrap_or(expanded);
         let session = crate::workspace::default(&project);
         install(&project, &home, false, session.as_deref())?;
         Ok(())

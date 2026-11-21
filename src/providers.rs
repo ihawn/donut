@@ -275,7 +275,7 @@ fn expand_and_resolve(text: &str) -> String {
     {
         path = cwd.join(path);
     }
-    if let Ok(real) = path.canonicalize() {
+    if let Ok(real) = dunce::canonicalize(&path) {
         return real.to_string_lossy().into_owned();
     }
     let mut clean = PathBuf::new();

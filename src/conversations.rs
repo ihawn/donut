@@ -41,7 +41,7 @@ pub fn now_seconds() -> f64 {
 
 /// Python's `Path.resolve()`: an absolute path with symlinks followed, even when the path does not exist.
 pub fn resolve(path: &Path) -> PathBuf {
-    if let Ok(found) = std::fs::canonicalize(path) {
+    if let Ok(found) = dunce::canonicalize(path) {
         return found;
     }
     let absolute = if path.is_absolute() {
@@ -63,7 +63,7 @@ pub fn resolve(path: &Path) -> PathBuf {
             _ => return absolute,
         }
     }
-    let mut out = std::fs::canonicalize(&base).unwrap_or(base);
+    let mut out = dunce::canonicalize(&base).unwrap_or(base);
     for part in rest.into_iter().rev() {
         if part == ".." {
             out.pop();
