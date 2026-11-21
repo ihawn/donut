@@ -1,4 +1,4 @@
-"""Choose a stable release version; pyproject's version is the minimum."""
+"""Choose a stable release version; the Cargo.toml package version is the minimum."""
 
 import re
 import subprocess
@@ -26,7 +26,7 @@ def next_version(base, tags, head_tags=()):
 if __name__ == "__main__":
     import tomllib
 
-    base = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+    base = tomllib.loads(Path("Cargo.toml").read_text())["package"]["version"]
     tags = subprocess.check_output(["git", "tag", "--list", "v*"], text=True).splitlines()
     head = subprocess.check_output(["git", "tag", "--points-at", "HEAD"], text=True).splitlines()
     print(next_version(base, tags, head))

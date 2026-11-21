@@ -9,7 +9,7 @@
   <a href="https://github.com/ihawn/Donut/actions/workflows/test.yml"><img src="https://github.com/ihawn/Donut/actions/workflows/test.yml/badge.svg" alt="Unit tests and installers"></a>
   <a href="https://github.com/ihawn/Donut/actions/workflows/release.yml"><img src="https://github.com/ihawn/Donut/actions/workflows/release.yml/badge.svg" alt="Release pipeline"></a>
   <a href="https://github.com/ihawn/Donut/releases/latest"><img src="https://img.shields.io/github/v/release/ihawn/Donut?style=flat-square&color=17B8BE" alt="Latest release"></a>
-  <a href="https://github.com/ihawn/Donut/blob/main/pyproject.toml"><img src="https://img.shields.io/badge/python-3.10%2B-124D63?style=flat-square" alt="Python 3.10 and newer"></a>
+  <a href="https://github.com/ihawn/Donut/blob/main/Cargo.toml"><img src="https://img.shields.io/badge/rust-single%20binary-124D63?style=flat-square" alt="Written in Rust, one binary"></a>
   <a href="#install"><img src="https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-FFA818?style=flat-square" alt="macOS, Windows and Linux"></a>
 </p>
 
@@ -32,7 +32,7 @@ curl.exe -fsSL https://raw.githubusercontent.com/ihawn/Donut/main/install.ps1 -o
 if ($LASTEXITCODE -eq 0) { powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\donut-install.ps1" }
 ```
 
-The installer uses [uv](https://docs.astral.sh/uv/) to put Donut and Python 3.13 in an isolated environment. Install the provider CLIs you plan to use (Qwen Code for local and OpenAI-compatible models, Claude Code, Codex) and, for local inference, run an Ollama server. Run the installer again to upgrade; your settings are kept.
+The installer downloads one self-contained `donut` executable for your platform from the latest release, checks its SHA-256 checksum, and puts it in `~/.local/bin` (on Windows, `%LOCALAPPDATA%\Programs\donut\bin`). Set `DONUT_INSTALL_DIR` to choose another folder. It also removes an earlier Python install of Donut. Install the provider CLIs you plan to use (Qwen Code for local and OpenAI-compatible models, Claude Code, Codex) and, for local inference, run an Ollama server. Run the installer again to upgrade; your settings are kept.
 
 ## Thirty seconds
 
@@ -112,7 +112,7 @@ Two sets of accounts on one machine, such as a company account and a personal su
 The **[reference](docs/reference.md)** covers every command and flag, the setup walkthrough, ticket format and lanes, provider details, run logs, releases and contributing. For development:
 
 ```sh
-python3 -m venv .venv && .venv/bin/pip install -e . ruff
-.venv/bin/python -m unittest discover -s tests -v
-.venv/bin/ruff check . && .venv/bin/ruff format --check .
+cargo test
+cargo clippy --all-targets -- -D warnings && cargo fmt --check
+cargo run -- --help
 ```
