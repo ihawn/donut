@@ -1,11 +1,6 @@
-__pycache__/
-*.py[cod]
-*.egg-info/
-build/
-dist/
-.venv/
+/target/
+.donut/
 .env
 .env.*
 !.env.example
-.donut/
 .DS_Store

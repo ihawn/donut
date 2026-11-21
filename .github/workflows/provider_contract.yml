@@ -10,8 +10,8 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - donut/providers.py
-      - scripts/check_provider_flags.py
+      - src/providers.rs
+      - tests/provider_contract.rs
       - .github/workflows/provider_contract.yml
 
 permissions:
@@ -22,13 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
+      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - name: Install provider CLIs
         run: npm install -g @openai/codex @anthropic-ai/claude-code @qwen-code/qwen-code
-      - run: python -m pip install .
-      - run: python scripts/check_provider_flags.py
+      - run: cargo test --locked --test provider_contract -- --ignored --nocapture
