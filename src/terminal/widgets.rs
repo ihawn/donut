@@ -944,9 +944,11 @@ impl Draft {
             return Some(self.lines[r0][c0..c1].iter().collect());
         }
         let mut out = vec![self.lines[r0][c0..].iter().collect::<String>()];
-        for r in r0 + 1..r1 {
-            out.push(self.lines[r].iter().collect());
-        }
+        out.extend(
+            self.lines[r0 + 1..r1]
+                .iter()
+                .map(|line| line.iter().collect::<String>()),
+        );
         out.push(self.lines[r1][..c1].iter().collect());
         Some(out.join("\n"))
     }
@@ -1280,8 +1282,12 @@ impl Draft {
         for (i, v) in rows.iter().enumerate().skip(scroll).take(height) {
             let y = inner.y + (i - scroll) as u16;
             let mut x = 0usize;
-            for col in v.start..v.end {
-                let ch = self.lines[v.row][col];
+            for (col, &ch) in self.lines[v.row]
+                .iter()
+                .enumerate()
+                .take(v.end)
+                .skip(v.start)
+            {
                 let w = cell_width(ch);
                 let mut style = Style::default().bg(BG);
                 if let Some((a, b)) = range {

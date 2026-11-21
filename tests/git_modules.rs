@@ -194,15 +194,23 @@ fn repo() -> Repo {
 }
 
 fn without_gh() {
-    set(
-        "PATH",
-        &std::env::var("DONUT_TEST_REAL_PATH")
-            .unwrap_or_default()
-            .split(':')
+    // gh is often in the same folder as git (/usr/bin on Ubuntu), so git is linked into a folder of its own.
+    let real = std::env::var("DONUT_TEST_REAL_PATH").unwrap_or_default();
+    let git = which::which_in("git", Some(&real), ".").expect("git on PATH");
+    let own = std::env::temp_dir().join(format!("donut-test-git-{}", std::process::id()));
+    std::fs::create_dir_all(&own).unwrap();
+    let link = own.join("git");
+    if !link.exists() {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&git, &link).unwrap();
+    }
+    let mut dirs = vec![own.to_string_lossy().into_owned()];
+    dirs.extend(
+        real.split(':')
             .filter(|dir| !Path::new(dir).join("gh").exists())
-            .collect::<Vec<_>>()
-            .join(":"),
+            .map(String::from),
     );
+    set("PATH", &dirs.join(":"));
 }
 
 #[cfg(unix)]
