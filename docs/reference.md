@@ -299,29 +299,28 @@ For Ollama, Donut loads the chosen model with a one-hour keepalive before a batc
 ## Development / verification
 
 ```sh
-python3 -m venv .venv && .venv/bin/pip install -e . ruff
-.venv/bin/python -m unittest discover -s tests -v
-.venv/bin/ruff check . && .venv/bin/ruff format --check .
-python3 scripts/check_provider_flags.py     # needs the real provider CLIs on PATH
+cargo test
+cargo clippy --all-targets -- -D warnings && cargo fmt --check
+cargo test --test provider_contract -- --ignored --nocapture   # needs the real provider CLIs on PATH
 ```
 
-Tests use fake agent executables and temporary projects; no credentials or paid model calls are needed. They cover dependency ordering, blocked tasks, verify commands, checkpoints, process errors, fresh invocations, output rendering, setup, model discovery, instruction preservation, credential boundaries and provider command construction. CI fails only on errors that break the code (`ruff check --select E9,F63,F7,F82`); style and formatting are left to the local `ruff` commands above.
+Tests use fake agent executables and temporary projects; no credentials or paid model calls are needed. They cover dependency ordering, blocked tasks, verify commands, checkpoints, process errors, fresh invocations, output rendering, setup, model discovery, instruction preservation, credential boundaries and provider command construction. CI runs `cargo fmt --check` and `cargo clippy -- -D warnings`, and runs the tests on macOS, Windows and Linux. Tests that need a fake provider executable are shell scripts, so they run on macOS and Linux only.
 
-Because the unit tests never touch a real provider, `scripts/check_provider_flags.py` installs nothing but checks that every flag Donut passes to `codex`, `claude` and `qwen` is still documented by the installed CLI. The [Provider contract](https://github.com/ihawn/Donut/actions/workflows/provider_contract.yml) workflow runs it weekly, on demand, and on pull requests that touch `providers.py`, with the current npm releases of all three CLIs. It never blocks a release.
+Because the unit tests never touch a real provider, `tests/provider_contract.rs` (ignored by default) installs nothing but checks that every flag Donut passes to `codex`, `claude` and `qwen` is still documented by the installed CLI. The [Provider contract](https://github.com/ihawn/Donut/actions/workflows/provider_contract.yml) workflow runs it weekly, on demand, and on pull requests that touch `src/providers.rs`, with the current npm releases of all three CLIs. It never blocks a release.
 
 macOS, Windows and Linux are supported and tested in CI, including the shell/PowerShell installers. No remote accounts, API keys, user configuration, or run logs belong in this repository.
 
 ## Releases
 
-The [Release workflow](https://github.com/ihawn/Donut/actions/workflows/release.yml) runs the complete macOS/Windows/Linux unit-test and installer matrix, builds a wheel and source distribution, checks package metadata, and smoke-tests the installed wheel in a clean directory (including the bundled skills).
+The [Release workflow](https://github.com/ihawn/Donut/actions/workflows/release.yml) runs the complete macOS/Windows/Linux unit-test and installer matrix, builds release executables for Linux (x86_64 and aarch64, static musl), macOS (Intel and Apple silicon) and Windows (x86_64), and smoke-tests each one in a clean directory (including the bundled skills).
 
 Every merge into `main` triggers this pipeline and publishes a GitHub Release after the checks pass. Direct pushes to `main` also trigger it. Pull requests run unit tests without publishing. Manual workflow runs validate and produce downloadable artifacts without publishing.
 
-The first release uses `version` in `pyproject.toml`. Subsequent releases automatically increment the highest stable release's patch version. To start a new minor or major series, raise the version in `pyproject.toml` in your PR; it serves as the minimum release version. CI stamps the selected version into the built packages without making a bot commit to the repository. Re-running an already tagged commit reuses its version.
+The first release uses `version` in `Cargo.toml`. Subsequent releases automatically increment the highest stable release's patch version. To start a new minor or major series, raise the version in `Cargo.toml` in your PR; it serves as the minimum release version. CI stamps the selected version into the executables (the `DONUT_RELEASE_VERSION` build variable) without making a bot commit to the repository. Re-running an already tagged commit reuses its version.
 
-Successful main runs create the version tag and publish the wheel, source distribution and `SHA256SUMS` using GitHub's built-in token; no additional release secret is needed. Re-running the same release updates its assets. This publishes to GitHub Releases, not PyPI.
+Successful main runs create the version tag and publish one archive per platform (`donut-<target>.tar.gz`, or `.zip` on Windows) and `SHA256SUMS` using GitHub's built-in token; no additional release secret is needed. Re-running the same release updates its assets. This publishes to GitHub Releases only.
 
-Installer CI uses `DONUT_INSTALL_SOURCE` to test the just-built wheel before a release exists; normal installations resolve the latest public GitHub Release.
+Installer CI uses `DONUT_INSTALL_SOURCE` to install a just-built archive twice before a release exists; normal installations resolve the latest public GitHub Release.
 
 ### On-hold tickets
 

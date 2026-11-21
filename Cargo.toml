@@ -7,6 +7,7 @@ license = "MIT"
 repository = "https://github.com/ihawn/Donut"
 readme = "README.md"
 rust-version = "1.85"
+default-run = "donut"
 
 [[bin]]
 name = "donut"
@@ -27,6 +28,20 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 regex = "1"
 tempfile = "3"
+which = "7"
+ureq = "3"
+uuid = { version = "1", features = ["v4"] }
+chrono = "0.4"
+sha2 = "0.10"
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
+ratatui = "0.29"
+fancy-regex = "0.16"
+libc = "0.2"
+ctrlc = "3"
+pulldown-cmark = "0.13.6"
+unicode-width = "0.2.0"
+base64 = "0.23.1"
+shlex = "2.0.1"
 
 [dev-dependencies]
 
