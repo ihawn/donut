@@ -942,6 +942,7 @@ impl App {
                 rec.told_wait = true;
             }
         }
+        prompt = crate::recap::with_note(text, prompt);
         let before = self.st().spent;
         handle.session.query(&prompt)?;
         self.add_spent_for(&handle);
@@ -950,6 +951,11 @@ impl App {
             let spent = s.spent;
             if let Some(rec) = s.rec_mut(handle.id) {
                 rec.turn_spend = spent - before; // Saved with the exchange, for donut stats.
+            }
+            // The recap is Donut's, not the answer's: keep it out of the history other models are given.
+            let from = s.shown;
+            if let Some(recap) = crate::recap::take(&mut s.turn_text, from) {
+                s.turn_recap = Some(recap);
             }
             s.remember_exchange(handle.id, text);
         }

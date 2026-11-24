@@ -134,7 +134,18 @@ struct Fake {
 }
 
 impl Fake {
+    /// What was sent, without the recap note Donut adds to every chat message (see crate::recap).
     fn calls(&self) -> Vec<String> {
+        self.raw_calls()
+            .into_iter()
+            .map(|call| {
+                call.strip_suffix(crate::recap::NOTE)
+                    .map_or(call.clone(), str::to_string)
+            })
+            .collect()
+    }
+
+    fn raw_calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
     }
 
@@ -2344,6 +2355,33 @@ fn test_streamed_updates_become_separate_paragraphs_in_the_transcript() {
             .starts_with("Status: found the job.\n\nConfirmed")
     );
     assert_eq!(s.shown, s.turn_text.len());
+}
+
+#[test]
+fn test_each_reply_ends_with_a_labelled_context_recap_kept_out_of_the_answer() {
+    let env = env();
+    let (app, fakes) = setup(&env, claude_config());
+    send(&app, "first");
+    let fake = fakes.first();
+    assert!(fake.raw_calls()[0].ends_with(crate::recap::NOTE));
+    fake.set_hook(|fake, _| {
+        (fake.emit)(
+            "text",
+            json!("Renamed it.\n\nDONUT-RECAP: We are renaming jump() to leap(); it is done."),
+        )
+    });
+    send(&app, "rename jump() to leap()");
+    let text = body(&app);
+    assert!(text.contains("Renamed it."));
+    assert!(text.contains(crate::recap::LABEL));
+    assert!(text.contains("We are renaming jump() to leap(); it is done."));
+    assert!(!text.contains("DONUT-RECAP"));
+    let s = app.st();
+    assert_eq!(s.last_answer, "Renamed it."); // /copy and the shared history get the reply only.
+    assert!(!s.exchanges.last().unwrap().answer.contains("DONUT-RECAP"));
+    drop(s);
+    send(&app, "/rename");
+    assert_eq!(fake.raw_calls().last().unwrap(), "/rename"); // Slash commands are sent as typed.
 }
 
 #[test]
