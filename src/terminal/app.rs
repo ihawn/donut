@@ -197,6 +197,8 @@ pub struct State {
     /// Process id of the shell command or worker this window started, so Ctrl+C can stop its group.
     pub child_pid: Option<u32>,
     pub turn_text: String,
+    /// The one-sentence recap taken out of this turn's answer, shown under it (see crate::recap).
+    pub turn_recap: Option<String>,
     pub shown: usize,
     pub message_start: usize,
     pub turn_tools: Vec<String>,
@@ -462,6 +464,7 @@ impl State {
             active: None,
             child_pid: None,
             turn_text: String::new(),
+            turn_recap: None,
             shown: 0,
             message_start: 0,
             turn_tools: Vec::new(),
@@ -774,6 +777,7 @@ impl State {
 
     pub fn reset_turn(&mut self) {
         self.turn_text.clear();
+        self.turn_recap = None;
         self.shown = 0;
         self.message_start = 0;
         self.turn_tools.clear();
@@ -1580,7 +1584,7 @@ impl State {
                     self.shown
                 };
                 let from = start.max(self.shown).min(self.turn_text.len());
-                let pending = self.turn_text[from..].trim().to_string();
+                let pending = crate::recap::hide(self.turn_text[from..].trim());
                 self.show_pending(&pending);
             }
             "error" => self.say(&format!("Error: {}", as_text(text)), Some(CORAL)),
@@ -1809,8 +1813,19 @@ impl State {
         if self.final_only() && self.shown < self.message_start {
             self.shown = self.message_start; // Earlier messages of the turn were progress notes: keep only the last.
         }
+        let from = self.shown;
+        if let Some(recap) = crate::recap::take(&mut self.turn_text, from) {
+            self.turn_recap = Some(recap);
+        }
         self.commit_paragraphs(true);
         self.response.clear();
+        if let Some(recap) = self.turn_recap.clone() {
+            self.say_line(Line::from(vec![
+                span(format!("  {}  ", crate::recap::LABEL), bold(DIM)),
+                span(recap, italic(DIM)),
+            ]));
+            self.blank();
+        }
         if self.turn_text.trim().is_empty() {
             // A turn with no words (the model only started or checked background work) must not look like a hang.
             let running = self.background_summary();

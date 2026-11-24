@@ -16,6 +16,7 @@ pub mod plugins;
 pub mod ponytail;
 pub mod providers;
 pub mod pullrequest;
+pub mod recap;
 pub mod repomap;
 pub mod routing;
 pub mod runner;
