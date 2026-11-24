@@ -17,7 +17,7 @@ static RECAP_TAIL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)^[ \t]*`?DONUT-R(?:E(?:C(?:A(?:P(?::.*)?)?)?)?)?$").unwrap());
 
 /// What the label on the recap line says.
-pub const LABEL: &str = "⟲ context recap · from Donut, not part of the reply";
+pub const LABEL: &str = "⟲ context recap";
 
 pub const NOTE: &str = "\n\n(Donut: end your reply with one last line `DONUT-RECAP: <one sentence>` that sums up \
 the whole conversation so far: the goal and where it stands now, not only this reply. Donut shows that line \
