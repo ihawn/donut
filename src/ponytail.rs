@@ -536,7 +536,10 @@ mod tests {
         let profile = json!({"engine": "codex", "claude_config_dir": claude});
         let project = env.root.path().join("app");
         assert_eq!(level(&profile, &project), "off");
-        write(&codex.join("plugins/data/ponytail-ponytail/.ponytail-active"), "full\n");
+        write(
+            &codex.join("plugins/data/ponytail-ponytail/.ponytail-active"),
+            "full\n",
+        );
         assert_eq!(level(&profile, &project), "full");
         unsafe { std::env::remove_var("CODEX_HOME") };
     }

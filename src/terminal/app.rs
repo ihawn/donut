@@ -185,6 +185,8 @@ pub struct State {
     pub history: Vec<String>,
     pub history_at: Option<usize>,
     pub history_stash: String,
+    /// Pasted or dropped image paths; the draft shows image N as `[screenshotN]` (render::image_label).
+    pub images: Vec<String>,
     pub recalled: bool,
     pub steps: Option<Vec<routing::Step>>,
     pub interface: String,
@@ -454,6 +456,7 @@ impl State {
             history: Vec::new(),
             history_at: None,
             history_stash: String::new(),
+            images: Vec::new(),
             recalled: false,
             steps: None,
             interface,

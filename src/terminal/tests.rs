@@ -886,9 +886,12 @@ fn test_dropped_paste_inserts_quoted_path() {
     std::fs::write(&shot, b"x").unwrap();
     let shot = shot.to_string_lossy().into_owned();
     app.handle_paste(&format!("\"{shot}\"")); // The quoted form every platform pastes.
+    assert_eq!(draft_text(&app), "[screenshot1] ");
+    app.handle_paste(&shot); // The same image again keeps its number.
+    assert_eq!(draft_text(&app), "[screenshot1] [screenshot1] ");
     assert_eq!(
-        draft_text(&app),
-        format!("{} ", super::render::quote_path(&shot))
+        super::render::expand_images("look [screenshot1]", &app.st().images),
+        format!("look {}", super::render::quote_path(&shot))
     );
     app.st().draft.load_text("");
     app.handle_paste("hello world");
@@ -912,8 +915,8 @@ fn test_pasted_image_paste_inserts_saved_path() {
     bytes.extend(vec![b'0'; 200]);
     let png = base64::engine::general_purpose::STANDARD.encode(&bytes);
     app.handle_paste(&png);
-    let words = shlex::split(&draft_text(&app)).unwrap();
-    let path = &words[0];
+    assert_eq!(draft_text(&app), "[screenshot1] ");
+    let path = &app.st().images[0].clone();
     assert!(path.ends_with(".png"));
     assert!(
         std::fs::read(path)

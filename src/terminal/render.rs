@@ -1472,6 +1472,32 @@ pub fn save_pasted_image(ext: &str, data: &[u8]) -> std::io::Result<String> {
 }
 
 /// Python's `shlex.quote`.
+/// What the draft and transcript show for the Nth pasted image (1-based).
+pub fn image_label(n: usize) -> String {
+    format!("[screenshot{n}]")
+}
+
+/// The text to send: each `[screenshotN]` label becomes image N's quoted path. Unknown labels stay as typed.
+pub fn expand_images(text: &str, images: &[String]) -> String {
+    images
+        .iter()
+        .enumerate()
+        .rev()
+        .fold(text.to_string(), |text, (at, path)| {
+            text.replace(&image_label(at + 1), &quote_path(path))
+        })
+}
+
+/// The reverse of expand_images, for showing a sent message: each known quoted path becomes its label.
+pub fn label_images(text: &str, images: &[String]) -> String {
+    images
+        .iter()
+        .enumerate()
+        .fold(text.to_string(), |text, (at, path)| {
+            text.replace(&quote_path(path), &image_label(at + 1))
+        })
+}
+
 pub fn quote_path(path: &str) -> String {
     let safe = |c: char| c.is_ascii_alphanumeric() || "@%+=:,./-_".contains(c);
     if !path.is_empty() && path.chars().all(safe) {
@@ -1640,6 +1666,28 @@ mod tests {
             let (ext, data) = pasted_image(&text).unwrap();
             assert_eq!((ext.as_str(), &data[..4]), ("png", &b"\x89PNG"[..]));
         }
+    }
+
+    #[test]
+    fn test_image_labels_expand_to_paths_and_back() {
+        let images = vec!["/tmp/a.png".to_string(), "/tmp/shot two.png".to_string()];
+        let sent = expand_images(
+            "see [screenshot2] and [screenshot1], not [screenshot3]",
+            &images,
+        );
+        assert_eq!(
+            sent,
+            "see '/tmp/shot two.png' and /tmp/a.png, not [screenshot3]"
+        );
+        assert_eq!(
+            label_images(&sent, &images),
+            "see [screenshot2] and [screenshot1], not [screenshot3]"
+        );
+        let many: Vec<String> = (1..=12).map(|n| format!("/tmp/{n}.png")).collect();
+        assert_eq!(
+            expand_images("[screenshot12] [screenshot1]", &many),
+            "/tmp/12.png /tmp/1.png"
+        );
     }
 
     #[test]

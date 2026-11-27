@@ -777,7 +777,8 @@ impl App {
                 session,
                 profile: profile.clone(),
                 task: Some({
-                    let mut task = ponytail::Task::new(&project, &engine, text_of(profile, "model"));
+                    let mut task =
+                        ponytail::Task::new(&project, &engine, text_of(profile, "model"));
                     task.level = ponytail::level(profile, &project);
                     task
                 }),
@@ -1039,7 +1040,8 @@ impl App {
 
     /// Solo: send the message to the soloist as is, in its own conversation, the way Claude Code would.
     pub fn solo(&self, text: &str) -> Result<()> {
-        self.say_line(styled(format!("> {text}"), bold(TEAL)));
+        let shown = render::label_images(text, &self.st().images);
+        self.say_line(styled(format!("> {shown}"), bold(TEAL)));
         let need_route = {
             let s = self.st();
             s.auto && s.route.is_none()
@@ -1077,7 +1079,8 @@ impl App {
             s.active = Some(handle);
             s.name_task(text);
             s.start_turn("review", "", "reviewing");
-            s.say_line(styled(format!("> {text}"), bold(ORANGE)));
+            let shown = render::label_images(text, &s.images);
+            s.say_line(styled(format!("> {shown}"), bold(ORANGE)));
             s.reset_turn();
         }
         self.ask(text, Some(&format!("{}{text}", render::REVIEW_MODE_PROMPT)))?;
@@ -1127,7 +1130,8 @@ impl App {
         );
         {
             let mut s = self.st();
-            s.say_line(styled(format!("> {text}"), bold(ORANGE)));
+            let shown = render::label_images(text, &s.images);
+            s.say_line(styled(format!("> {shown}"), bold(ORANGE)));
             s.reset_turn();
         }
         self.ask(text, Some(&prompt))?;
@@ -1176,7 +1180,7 @@ impl App {
             // Like Claude Code: a message sent during a turn waits and runs as soon as the turn ends.
             let mut s = self.st();
             s.queued.push(Queued::Text(text.to_string()));
-            let first = text
+            let first = render::label_images(text, &s.images)
                 .lines()
                 .next()
                 .unwrap_or("")

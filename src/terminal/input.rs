@@ -255,7 +255,7 @@ impl App {
                 s.history.push(text.clone());
             }
             s.history_at = None;
-            text
+            render::expand_images(&text, &s.images)
         };
         self.after_edit();
         self.submit(&text);
@@ -310,8 +310,21 @@ impl App {
         if paths.is_empty() {
             self.st().draft.insert(text);
         } else {
-            let quoted: Vec<String> = paths.iter().map(|path| render::quote_path(path)).collect();
-            self.st().draft.insert(&format!("{} ", quoted.join(" ")));
+            let mut s = self.st();
+            let labels: Vec<String> = paths
+                .into_iter()
+                .map(|path| {
+                    let n = match s.images.iter().position(|known| *known == path) {
+                        Some(at) => at + 1,
+                        None => {
+                            s.images.push(path);
+                            s.images.len()
+                        }
+                    };
+                    render::image_label(n)
+                })
+                .collect();
+            s.draft.insert(&format!("{} ", labels.join(" ")));
         }
         self.after_edit();
     }
