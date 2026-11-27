@@ -113,6 +113,62 @@ pub fn claude_options(info: &Value, model: &str) -> Options {
     ("Effort".into(), described, Some("high".into()))
 }
 
+/// ("Thinking", [(level, description)], default) for an Ollama model, from Ollama's `/api/show` answer.
+///
+/// Ollama lists each thinking model's levels: `[false, true]` for most, named levels (low, medium, high) for some.
+/// A model without a thinking capability takes no setting.
+pub fn ollama_options(show: &Value) -> Options {
+    let term = "Thinking".to_string();
+    let thinking = show.get("thinking");
+    let capable = show
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .is_some_and(|list| list.iter().any(|c| c.as_str() == Some("thinking")));
+    if !capable {
+        return (term, Vec::new(), None);
+    }
+    let level = |value: &Value| match value {
+        Value::Bool(false) => Some("off".to_string()),
+        Value::Bool(true) => Some("on".to_string()),
+        Value::String(text) if !text.is_empty() => Some(text.to_lowercase()),
+        _ => None,
+    };
+    let mut values: Vec<String> = thinking
+        .and_then(|t| t.get("values"))
+        .and_then(Value::as_array)
+        .map(|list| list.iter().filter_map(level).collect())
+        .unwrap_or_default();
+    if values.is_empty() {
+        values = vec!["off".into(), "on".into()];
+    }
+    let words = |level: &str| match level {
+        "off" => "No thinking: fastest answers",
+        "on" => "Thinks before it answers",
+        "low" => "Light thinking",
+        "medium" => "Moderate thinking",
+        "high" => "Deep thinking",
+        _ => "",
+    };
+    let described = values
+        .into_iter()
+        .map(|value| {
+            let text = words(&value).to_string();
+            (value, text)
+        })
+        .collect();
+    let default = thinking.and_then(|t| t.get("default")).and_then(level);
+    (term, described, default)
+}
+
+/// The `reasoning_effort` an OpenAI-compatible endpoint takes for a Donut level: off is none, on is high.
+pub fn wire_level(level: &str) -> &str {
+    match level {
+        "off" => "none",
+        "on" => "high",
+        other => other,
+    }
+}
+
 /// ("Reasoning effort", [(level, description)], default) for a Codex model, from Codex's model list.
 pub fn codex_options(models: &Value, model: &str) -> Options {
     let term = "Reasoning effort".to_string();
@@ -288,6 +344,29 @@ mod tests {
         assert!(!qwen.contains(&"--effort".to_string()));
         assert!(
             providers::validate(&json!({"engine": "claude", "effort": "high; rm -rf"})).is_err()
+        );
+    }
+
+    #[test]
+    fn ollama_levels_come_from_the_models_own_list() {
+        let show = json!({"capabilities": ["completion", "thinking"], "thinking": {"values": [false, true], "default": true}});
+        let (term, levels, default) = ollama_options(&show);
+        assert_eq!(term, "Thinking");
+        assert_eq!(
+            levels.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(),
+            ["off", "on"]
+        );
+        assert_eq!(default.as_deref(), Some("on"));
+        let named = json!({"capabilities": ["thinking"], "thinking": {"values": ["low", "medium", "high"], "default": "medium"}});
+        assert_eq!(ollama_options(&named).1.len(), 3);
+        assert!(
+            ollama_options(&json!({"capabilities": ["completion"]}))
+                .1
+                .is_empty()
+        );
+        assert_eq!(
+            (wire_level("off"), wire_level("on"), wire_level("low")),
+            ("none", "high", "low")
         );
     }
 }

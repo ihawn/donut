@@ -2822,7 +2822,33 @@ impl App {
             (s.prof(role), s.sel(role))
         };
         let model = text_of(&profile, "model").unwrap_or("").to_string();
+        if let Some(harness) = crate::harness::chosen(&profile)
+            && engine_of(&profile) != Some(harness)
+        {
+            bail!(
+                "Effort for a model in another harness ({harness}) is not supported yet; /harness auto gives it back."
+            );
+        }
         match engine_of(&profile) {
+            Some("ollama") => {
+                let url = format!(
+                    "{}/api/show",
+                    crate::providers::ollama_base_url().trim_end_matches("/v1")
+                );
+                let agent: ureq::Agent = ureq::Agent::config_builder()
+                    .timeout_global(Some(Duration::from_secs(10)))
+                    .build()
+                    .into();
+                let body = agent
+                    .post(&url)
+                    .header("Content-Type", "application/json")
+                    .send(json!({"model": model}).to_string())
+                    .map_err(|error| anyhow!("Ollama did not answer: {error}"))?
+                    .body_mut()
+                    .read_to_string()?;
+                let show: Value = serde_json::from_str(&body)?;
+                Ok(effort::ollama_options(&show))
+            }
             Some("claude") => {
                 let purpose = if role == "review" {
                     Some("review")

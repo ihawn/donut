@@ -2128,6 +2128,13 @@ impl Session for QwenSession {
         "qwen"
     }
 
+    /// Every Qwen turn is a new process: the next one reads the level from the profile.
+    fn set_effort(&self, level: &str) -> Result<()> {
+        let mut data = lock(&self.inner.data);
+        data.profile = with_key(&data.profile, "effort", json!(level));
+        Ok(())
+    }
+
     fn connect(&self) -> Result<()> {
         let mut data = lock(&self.inner.data);
         data.session_id = self
