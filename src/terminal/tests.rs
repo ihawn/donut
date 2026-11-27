@@ -3652,3 +3652,81 @@ fn test_harness_refuses_a_cross_vendor_run_without_a_gateway() {
     assert!(body(&app).contains("gateway_url"), "{}", body(&app));
     assert!(load_config().get("harness").is_none()); // Not saved.
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// Ponytail out of sight, and /ponytail-options
+
+/// A Claude login with Ponytail installed and enabled, in a config dir of its own.
+fn ponytail_config(env: &Env) -> Value {
+    let claude = env.temp.path().join("claude-ponytail");
+    let plugin = claude.join("plugins/cache/ponytail/ponytail/5.3.3");
+    for (path, text) in [
+        (plugin.join("skills/ponytail/SKILL.md"), "---\nname: ponytail\ndescription: Lazy senior dev mode.\n---\n".to_string()),
+        (plugin.join("skills/ponytail-review/SKILL.md"), "---\nname: ponytail-review\ndescription: Review a change.\n---\n".to_string()),
+        (
+            claude.join("plugins/installed_plugins.json"),
+            json!({"version": 2, "plugins": {"ponytail@ponytail": [{"scope": "user", "installPath": plugin}]}}).to_string(),
+        ),
+        (claude.join("settings.json"), json!({"enabledPlugins": {"ponytail@ponytail": true}}).to_string()),
+        (claude.join(".ponytail-active"), "full".to_string()),
+    ] {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    json!({"aliases": {"claude": {"engine": "claude", "model": "claude-opus-5-5", "claude_config_dir": claude}}, "planner": "claude"})
+}
+
+#[test]
+fn test_ponytail_runs_out_of_sight_and_ponytail_options_holds_its_menu() {
+    let env = env();
+    let (app, _) = setup(&env, ponytail_config(&env));
+    let profile = app.st().prof("plan");
+    assert!(app.st().has_ponytail(&profile));
+    assert!(app.st().band_line().is_none()); // Installed, but no band by default.
+    let names: Vec<String> = app.slash_rows().into_iter().map(|row| row.label).collect();
+    assert!(
+        names.contains(&"/ponytail-options".to_string()),
+        "{names:?}"
+    );
+    assert!(
+        !names
+            .iter()
+            .any(|name| name.starts_with("/ponytail") && name != "/ponytail-options"),
+        "{names:?}"
+    );
+    // The menu: the four levels with the live one marked, Ponytail's commands, and the band switch.
+    let (sender, done) = std::sync::mpsc::channel();
+    {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(app.command("/ponytail-options").is_ok());
+        });
+    }
+    wait("menu open", || menu_open(&app));
+    assert_eq!(app.st().menu.title, "Ponytail · now full");
+    assert_eq!(
+        labels(&app),
+        [
+            "Lite",
+            "Full (default) · now",
+            "Ultra",
+            "Off",
+            "/ponytail-review",
+            "Show the band"
+        ]
+    );
+    assert_eq!(values(&app)[0], json!("/ponytail lite"));
+    press(&app, &["down", "down", "down", "down", "down"]);
+    assert_eq!(
+        app.st()
+            .menu
+            .current()
+            .map(|row| row.label.clone())
+            .as_deref(),
+        Some("Show the band")
+    );
+    press(&app, &["enter"]);
+    assert!(done.recv_timeout(Duration::from_secs(5)).unwrap());
+    assert_eq!(load_config()["ponytail_band"], json!(true));
+    assert!(app.st().band_line().is_some());
+}

@@ -405,8 +405,51 @@ impl App {
         if ask {
             self.spawn(|app| app.first_open());
         }
+        if self.st().options.install_ponytail {
+            let app = self.clone();
+            std::thread::spawn(move || app.install_ponytail());
+        }
         if auto_refresh {
             self.refresh_quotas_soon(true);
+        }
+    }
+
+    /// Donut ships with Ponytail: install it, at its default level, for each Claude and Codex login without it.
+    fn install_ponytail(&self) {
+        let logins: Vec<(String, Value)> = {
+            let s = self.st();
+            let mut seen = Vec::new();
+            let mut logins = Vec::new();
+            for (alias, profile) in s
+                .config
+                .get("aliases")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+            {
+                let key = usage_key(profile);
+                if matches!(engine_of(profile), Some("claude" | "codex")) && !seen.contains(&key) {
+                    seen.push(key);
+                    logins.push((alias.clone(), profile.clone()));
+                }
+            }
+            logins
+        };
+        for (alias, profile) in logins {
+            match plugins::ensure_ponytail(&profile) {
+                Ok(true) => {
+                    let mut s = self.st();
+                    s.ponytail_installed.clear();
+                    s.say(&format!("  Ponytail installed for {alias} at its default level. /ponytail-options changes it."), Some(DIM));
+                    if engine_of(&profile) == Some("codex") {
+                        s.say("  Codex runs its hooks only after you trust them once: /native, then /hooks.", Some(DIM));
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    self.say_dim(&format!("  Ponytail not installed for {alias}: {error}"))
+                }
+            }
         }
     }
 

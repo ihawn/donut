@@ -40,6 +40,8 @@ pub struct AppOptions {
     pub auto_refresh_quotas: bool,
     /// Ask simple or complex the first time Donut opens.
     pub ask_interface: bool,
+    /// Install Ponytail for each Claude and Codex login that lacks it; tests turn this off.
+    pub install_ponytail: bool,
     /// plan, work, review or solo: the mode Donut opens in.
     pub start_mode: String,
 }
@@ -49,6 +51,7 @@ impl Default for AppOptions {
         AppOptions {
             auto_refresh_quotas: true,
             ask_interface: true,
+            install_ponytail: true,
             start_mode: "solo".into(),
         }
     }
@@ -60,6 +63,7 @@ impl AppOptions {
         AppOptions {
             auto_refresh_quotas: false,
             ask_interface: false,
+            install_ponytail: false,
             start_mode: "plan".into(),
         }
     }
@@ -283,6 +287,12 @@ pub fn text_of<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
         .get(key)
         .and_then(Value::as_str)
         .filter(|text| !text.is_empty())
+}
+
+/// Ponytail works out of sight: its own commands stay out of the / menu, and /ponytail-options holds them.
+/// Typed in full they still reach the model.
+fn hidden_command(name: &str) -> bool {
+    name.starts_with("/ponytail")
 }
 
 pub fn engine_of(profile: &Value) -> Option<&str> {
@@ -1191,7 +1201,8 @@ impl State {
         let profile = self.prof(&self.role());
         if is_empty_profile(&profile)
             || self.focus_view
-            || self.config.get("ponytail_band") == Some(&Value::Bool(false))
+            // Ponytail runs out of sight: its band shows only after /ponytail-options turns it on.
+            || self.config.get("ponytail_band") != Some(&Value::Bool(true))
             || !self.has_ponytail(&profile)
         {
             return None;
@@ -2010,7 +2021,7 @@ impl State {
             };
             if let Some(name) = name {
                 let full = format!("/{}", name.trim_start_matches('/'));
-                if !rows.iter().any(|row| row.label == full) {
+                if !hidden_command(&full) && !rows.iter().any(|row| row.label == full) {
                     let description = command
                         .get("description")
                         .and_then(Value::as_str)
@@ -2022,9 +2033,9 @@ impl State {
                 }
             }
         }
-        // Installed plugins and skills (Ponytail's /ponytail-review, ...), listed before any session is open.
+        // Installed plugins and skills, listed before any session is open.
         for command in plugin_commands {
-            if !rows.iter().any(|row| row.label == command.name) {
+            if !hidden_command(&command.name) && !rows.iter().any(|row| row.label == command.name) {
                 rows.push(
                     MenuRow::new(command.name.clone(), json!(command.name))
                         .described(&command.description.chars().take(80).collect::<String>()),
