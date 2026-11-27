@@ -294,6 +294,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "Claude models use the Claude in Chrome browser tools by default (/chrome off removes them)",
     ),
     (
+        "/harness",
+        "Run the current mode's model in Claude Code or Codex, whatever its provider (auto: its own)",
+    ),
+    (
         "/login",
         "Sign in again to the current mode's provider account",
     ),

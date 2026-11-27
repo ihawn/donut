@@ -786,6 +786,9 @@ impl App {
             mut conversation,
             track,
         } = request;
+        // With /harness, the model runs in another provider's agent loop: open that one's session instead.
+        let effective = crate::harness::effective(profile)?;
+        let profile = &effective;
         let thread = purpose.unwrap_or("plan").to_string();
         let key = State::session_key(alias, profile, purpose);
         let mut waiting: Option<Value> = None;
@@ -986,8 +989,17 @@ impl App {
                 rec.key.0.clone(),
             )
         };
+        // A model from another provider in this harness carries its own endpoint: that needs a new process.
+        let endpoint = |p: &Value| {
+            (
+                p.get("model_engine").cloned(),
+                p.get("env").cloned(),
+                p.get("codex_config").cloned(),
+            )
+        };
         if usage_key(&old_profile) != usage_key(profile)
             || !matches!(engine_of(profile), Some("claude" | "codex"))
+            || endpoint(&old_profile) != endpoint(profile)
         {
             return None;
         }
@@ -2814,6 +2826,48 @@ impl App {
             );
         }
         self.say_dim("  It applies to new conversations: /clear starts one. /work uses it from its next run.");
+        self.status(None);
+    }
+
+    /// Run the role's model in another provider's harness (`auto` is its own), checked first, then saved.
+    pub fn set_harness(&self, role: &str, harness: &str) {
+        let mut profile = self.st().prof(role);
+        if is_empty_profile(&profile) {
+            self.say_dim("  Choose a model for this mode first.");
+            return;
+        }
+        profile["harness"] = json!(harness);
+        if let Err(error) = crate::harness::effective(&profile) {
+            self.say(&format!("  {error}"), Some(CORAL));
+            return;
+        }
+        let map = {
+            let mut s = self.st();
+            if !s.config.get("harness").is_some_and(Value::is_object) {
+                s.config["harness"] = json!({});
+            }
+            if harness == "auto" {
+                if let Some(map) = s.config["harness"].as_object_mut() {
+                    map.shift_remove(role);
+                }
+            } else {
+                s.config["harness"][role] = json!(harness);
+            }
+            s.config["harness"].clone()
+        };
+        if let Err(error) = self.save_config_key("harness", map) {
+            self.say_dim(&format!("Harness applies to this session only: {error}"));
+        }
+        let engine = text_of(&profile, "engine").unwrap_or("");
+        let shown = match harness {
+            "auto" => format!("{engine}'s own"),
+            other => other.to_string(),
+        };
+        self.say_line(styled(
+            format!("  {} harness · {shown}", role_title(role)),
+            bold(ORANGE),
+        ));
+        self.say_dim("  The next message opens it; the conversation so far is handed over.");
         self.status(None);
     }
 

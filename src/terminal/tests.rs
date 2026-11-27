@@ -3608,3 +3608,47 @@ fn test_questions_pick_an_option_toggle_several_or_type_something_else() {
     assert_eq!(answer.recv_timeout(Duration::from_secs(5)).unwrap(), None);
     assert!(app.st().typing.is_none());
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// /harness
+
+#[test]
+fn test_harness_runs_a_local_model_in_claude_code_and_is_saved_per_mode() {
+    let env = env();
+    let config =
+        json!({"aliases": {"local": {"engine": "ollama", "model": "qwen3.6"}}, "planner": "local"});
+    let (app, fakes) = setup(&env, config);
+    let role = app.st().role();
+    send(&app, "/harness claude");
+    assert_eq!(load_config()["harness"][&role], "claude"); // Saved for the next window.
+    assert_eq!(app.st().prof(&role)["harness"], "claude");
+    send(&app, "hello");
+    let made = fakes.made.lock().unwrap().last().cloned().unwrap();
+    let profile = made.profile.lock().unwrap().clone();
+    assert_eq!(made.family, "claude"); // Claude Code's session, not Donut's own loop for Ollama.
+    assert_eq!(
+        (
+            profile["engine"].as_str(),
+            profile["model_engine"].as_str(),
+            profile["model"].as_str()
+        ),
+        (Some("claude"), Some("ollama"), Some("qwen3.6"))
+    );
+    assert_eq!(profile["env"]["ANTHROPIC_AUTH_TOKEN"], "ollama");
+    send(&app, "/harness sideways");
+    assert_eq!(load_config()["harness"][&role], "claude"); // An unknown harness changes nothing.
+    send(&app, "/harness auto");
+    assert!(load_config()["harness"].get(&role).is_none());
+    assert!(app.st().prof(&role).get("harness").is_none());
+}
+
+#[test]
+fn test_harness_refuses_a_cross_vendor_run_without_a_gateway() {
+    let env = env();
+    let config =
+        json!({"aliases": {"gpt": {"engine": "codex", "model": "gpt-6.2"}}, "planner": "gpt"});
+    let (app, _) = setup(&env, config);
+    send(&app, "/harness claude");
+    assert!(body(&app).contains("gateway_url"), "{}", body(&app));
+    assert!(load_config().get("harness").is_none()); // Not saved.
+}

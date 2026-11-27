@@ -323,6 +323,9 @@ pub fn command_with(
     environment: &HashMap<String, String>,
     which: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Launch> {
+    // With /harness, the model runs in another provider's CLI (crate::harness).
+    let effective = crate::harness::effective(profile)?;
+    let profile = &effective;
     validate(profile)?;
     let engine = profile["engine"].as_str().unwrap_or_default();
     let model = text(profile, "model");
@@ -335,6 +338,11 @@ pub fn command_with(
         && let Some(directory) = text(profile, "claude_config_dir")
     {
         env.insert("CLAUDE_CONFIG_DIR".into(), expand_and_resolve(directory));
+    }
+    if let Some(extra) = profile.get("env").and_then(Value::as_object) {
+        for (key, value) in extra {
+            env.insert(key.clone(), value.as_str().unwrap_or("").to_string());
+        }
     }
     let mut args: Vec<String> = Vec::new();
     let mut add = |items: &[&str]| args.extend(items.iter().map(|item| item.to_string()));
@@ -360,6 +368,15 @@ pub fn command_with(
         }
         if let Some(effort) = text(profile, "effort") {
             add(&["-c", &format!("model_reasoning_effort=\"{effort}\"")]);
+        }
+        for item in profile
+            .get("codex_config")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            add(&["-c", item]);
         }
         add(&["-"]);
     } else if engine == "claude" {
@@ -644,6 +661,25 @@ mod tests {
         command_with(&profile, "task", false, permission, false, &env, &which)
             .unwrap()
             .0
+    }
+
+    #[test]
+    fn harness_runs_the_worker_in_the_chosen_cli() {
+        let env: HashMap<String, String> = HashMap::new();
+        let which = |_: &str| Some("/bin/agent".to_string());
+        let local = json!({"engine": "ollama", "model": "qwen3.6", "harness": "claude"});
+        let (args, env_out) =
+            command_with(&local, "task", false, None, false, &env, &which).unwrap();
+        assert!(args.contains(&"--print".to_string()), "{args:?}"); // Claude Code's batch mode.
+        assert_eq!(after(&args, "--model"), "qwen3.6");
+        assert_eq!(env_out["ANTHROPIC_AUTH_TOKEN"], "ollama");
+        let local = json!({"engine": "ollama", "model": "qwen3.6", "harness": "codex"});
+        let (args, _) = command_with(&local, "task", false, None, false, &env, &which).unwrap();
+        assert!(args.contains(&"exec".to_string()), "{args:?}");
+        assert!(
+            args.contains(&"model_provider=\"donut\"".to_string()),
+            "{args:?}"
+        );
     }
 
     fn after<'a>(args: &'a [String], flag: &str) -> &'a str {

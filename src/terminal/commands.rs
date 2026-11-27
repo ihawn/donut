@@ -22,8 +22,8 @@ use crate::summaries::{
 };
 use crate::{handholding, plugins, tickets};
 
-const HELP_SIMPLE: &str = "/harder (a stronger model for this conversation) · /routing · /model · /resume · /clear (or /new) · /permissions [ask|accept_edits|auto|full] · /auto · /effort · /verbosity [quiet|normal|verbose|full] · /chrome [on|off] · /usage · /plugin · /mcp · /context · /copy · /project [PATH] · /rename · /login · /native · /complex (show every feature) · /exit\nDonut rates your first message in a conversation and picks the model for it; the model stays until /clear. !COMMAND runs a shell command in the project. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued.";
-const HELP_COMPLEX: &str = "/plan · /work [next COUNT] [parallel N] [checkpoint] · /review · /solo · /resume · /session [NAME|new] · /next [COUNT] · /prev [COUNT] · /project [PATH] · /planner · /worker · /reviewer [ALIAS|planner|off] · /soloist · /handholding [low|medium|high] · /model · /permissions [ask|accept_edits|auto|full] · /auto · /verbosity [quiet|normal|verbose|full] · /chrome [on|off] · /usage · /plugin · /mcp · /context · /clear (or /new) · /ponytail band · /copy · /login · /native · /harder · /routing · /simple · /exit\n!COMMAND runs a shell command in the project; the model sees its output with your next message. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Installed plugin and skill commands (such as Ponytail's) are listed under / and forwarded to the selected session in its own syntax. Use /native for built-ins requiring the provider’s own UI.";
+const HELP_SIMPLE: &str = "/harder (a stronger model for this conversation) · /routing · /model · /resume · /clear (or /new) · /permissions [ask|accept_edits|auto|full] · /auto · /effort · /verbosity [quiet|normal|verbose|full] · /chrome [on|off] · /harness [auto|claude|codex] · /usage · /plugin · /mcp · /context · /copy · /project [PATH] · /rename · /login · /native · /complex (show every feature) · /exit\nDonut rates your first message in a conversation and picks the model for it; the model stays until /clear. !COMMAND runs a shell command in the project. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued.";
+const HELP_COMPLEX: &str = "/plan · /work [next COUNT] [parallel N] [checkpoint] · /review · /solo · /resume · /session [NAME|new] · /next [COUNT] · /prev [COUNT] · /project [PATH] · /planner · /worker · /reviewer [ALIAS|planner|off] · /soloist · /handholding [low|medium|high] · /model · /permissions [ask|accept_edits|auto|full] · /auto · /verbosity [quiet|normal|verbose|full] · /chrome [on|off] · /harness [auto|claude|codex] · /usage · /plugin · /mcp · /context · /clear (or /new) · /ponytail band · /copy · /login · /native · /harder · /routing · /simple · /exit\n!COMMAND runs a shell command in the project; the model sees its output with your next message. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Installed plugin and skill commands (such as Ponytail's) are listed under / and forwarded to the selected session in its own syntax. Use /native for built-ins requiring the provider’s own UI.";
 
 fn is_count(text: &str) -> bool {
     !text.is_empty()
@@ -252,6 +252,40 @@ impl App {
                         s.focus_view
                     };
                     self.set_verbosity(if on { "quiet" } else { "normal" });
+                }
+            }
+            "/harness" => {
+                let role = self.st().role();
+                let chosen: Option<String> = match args.first() {
+                    Some(harness) if crate::harness::HARNESSES.contains(harness) => {
+                        Some((*harness).to_string())
+                    }
+                    Some(_) => {
+                        self.say_dim("  Use /harness [auto|claude|codex].");
+                        None
+                    }
+                    None => {
+                        let rows = vec![
+                            MenuRow::new("Auto", json!("auto"))
+                                .described("Each model runs in its own provider's harness"),
+                            MenuRow::new("Claude Code", json!("claude")).described(
+                                "Any model in Claude Code: local Ollama as is, others through gateway_url",
+                            ),
+                            MenuRow::new("Codex", json!("codex")).described(
+                                "Any model in Codex: local Ollama and OpenAI-compatible endpoints as is, others through gateway_url",
+                            ),
+                        ];
+                        let now = self.st().harness_of(&role).unwrap_or_else(|| "auto".into());
+                        self.pick_with(
+                            &format!("Harness for the {} · now {now}", render::role_title(&role)),
+                            rows,
+                            "The agent loop that drives the model; the model stays the same",
+                        )
+                        .and_then(|v| v.as_str().map(str::to_string))
+                    }
+                };
+                if let Some(chosen) = chosen {
+                    self.set_harness(&role, &chosen);
                 }
             }
             "/chrome" => {

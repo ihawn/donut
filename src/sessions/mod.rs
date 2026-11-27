@@ -1081,6 +1081,19 @@ impl Session for CodexSession {
             .clone()
             .or_else(|| which::which("codex").ok())
             .unwrap_or_else(|| "codex".into());
+        // A model from another provider in this harness (crate::harness): its endpoint as a model provider.
+        let overrides: Vec<String> = lock(&inner.state)
+            .profile
+            .get("codex_config")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut child = Command::new(program)
             // The -c flag lets the model ask questions outside plan mode as item/tool/requestUserInput, which
             // Donut answers. Without it Codex posts them as an async message and sleeps until a reply comes.
@@ -1090,6 +1103,7 @@ impl Session for CodexSession {
                 "-c",
                 "features.default_mode_request_user_input=true",
             ])
+            .args(overrides.iter().flat_map(|item| ["-c", item.as_str()]))
             .current_dir(&inner.project)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1470,6 +1484,12 @@ impl ClaudeInner {
                 "CLAUDE_CONFIG_DIR".to_string(),
                 expanduser(&dir).to_string_lossy().into_owned(),
             ));
+        }
+        // A model from another provider in this harness (crate::harness): its endpoint and model names.
+        if let Some(extra) = profile.get("env").and_then(Value::as_object) {
+            for (key, value) in extra {
+                env.push((key.clone(), value.as_str().unwrap_or("").to_string()));
+            }
         }
         let permission_mode = if self.read_only {
             "plan".to_string()

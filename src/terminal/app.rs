@@ -527,10 +527,27 @@ impl State {
     }
 
     pub fn prof(&self, role: &str) -> Value {
-        self.profiles
+        let mut profile = self
+            .profiles
             .get(role)
             .cloned()
-            .unwrap_or_else(|| json!({}))
+            .unwrap_or_else(|| json!({}));
+        if let Some(harness) = self.harness_of(role)
+            && profile.as_object().is_some_and(|o| !o.is_empty())
+        {
+            profile["harness"] = json!(harness);
+        }
+        profile
+    }
+
+    /// The harness /harness saved for a role (config `harness.<role>`), if it is not the model's own.
+    pub fn harness_of(&self, role: &str) -> Option<String> {
+        self.config
+            .get("harness")
+            .and_then(|harness| harness.get(role))
+            .and_then(Value::as_str)
+            .filter(|h| !h.is_empty() && *h != "auto")
+            .map(str::to_string)
     }
 
     pub fn role(&self) -> String {
@@ -563,10 +580,13 @@ impl State {
     }
 
     pub fn session_key(alias: &str, profile: &Value, purpose: Option<&str>) -> SessionKey {
-        let name = match purpose {
+        let mut name = match purpose {
             Some(purpose) => format!("{alias}@{purpose}"),
             None => alias.to_string(),
         };
+        if let Some(harness) = crate::harness::chosen(profile) {
+            name.push_str(&format!(" in {harness}")); // Another harness is another session.
+        }
         (name, text_of(profile, "model").map(str::to_string))
     }
 
