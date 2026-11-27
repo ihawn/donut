@@ -3511,3 +3511,100 @@ fn test_qwen_still_points_to_native_for_raw_controls() {
     send(&app, "/mcp");
     assert!(body(&app).contains("Use /native for Qwen plugins, MCP and context controls."));
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// Model questions (Claude's AskUserQuestion, Codex's request_user_input)
+
+fn spawn_questions(
+    app: &App,
+    questions: Vec<crate::sessions::Question>,
+) -> std::sync::mpsc::Receiver<Option<crate::sessions::Answers>> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let _ = sender.send(app.answer_questions(&questions));
+    });
+    receiver
+}
+
+fn question(id: &str, options: &[&str], multi: bool) -> crate::sessions::Question {
+    crate::sessions::Question {
+        id: id.into(),
+        header: "Color".into(),
+        question: "Which color do you like?".into(),
+        options: options
+            .iter()
+            .map(|o| (o.to_string(), String::new()))
+            .collect(),
+        multi,
+        other: true,
+        secret: false,
+    }
+}
+
+#[test]
+fn test_questions_pick_an_option_toggle_several_or_type_something_else() {
+    let env = env();
+    let (app, _) = setup(&env, claude_config());
+    let sent = recorded(&app);
+    // One option, by number.
+    let answer = spawn_questions(&app, vec![question("color", &["Red", "Blue"], false)]);
+    wait("menu open", || menu_open(&app));
+    assert_eq!(app.st().menu.title, "Color");
+    assert_eq!(
+        labels(&app),
+        ["Red", "Blue", "Something else (type your answer)"]
+    );
+    let details = plain_lines(&app.st().menu.details.clone());
+    assert_eq!(details, "Which color do you like?"); // The question, not a JSON dump.
+    press(&app, &["2"]);
+    assert_eq!(
+        answer.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Some(vec![("color".to_string(), vec!["Blue".to_string()])])
+    );
+    // Something else: the typed prompt answers it, and does not go to the model or the history.
+    let answer = spawn_questions(&app, vec![question("color", &["Red", "Blue"], false)]);
+    wait("menu open", || menu_open(&app));
+    press(&app, &["3"]);
+    wait("typing", || app.st().typing.is_some());
+    app.st().draft.load_text("Green");
+    press(&app, &["enter"]);
+    assert_eq!(
+        answer.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Some(vec![("color".to_string(), vec!["Green".to_string()])])
+    );
+    assert!(sent.lock().unwrap().is_empty());
+    assert!(!app.st().history.contains(&"Green".to_string()));
+    // Multi-select: toggle two, untoggle one, then Done.
+    let answer = spawn_questions(
+        &app,
+        vec![question("colors", &["Red", "Blue", "Gold"], true)],
+    );
+    let marks = |expected: [&str; 3]| {
+        wait("rows", || {
+            labels(&app).get(..3) == Some(&expected.map(String::from)[..])
+        })
+    };
+    marks(["[ ] Red", "[ ] Blue", "[ ] Gold"]);
+    press(&app, &["1"]);
+    marks(["[x] Red", "[ ] Blue", "[ ] Gold"]);
+    press(&app, &["3"]);
+    marks(["[x] Red", "[ ] Blue", "[x] Gold"]);
+    press(&app, &["1"]);
+    marks(["[ ] Red", "[ ] Blue", "[x] Gold"]);
+    press(&app, &["5"]); // Done, after the three options and Something else.
+    assert_eq!(
+        answer.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Some(vec![("colors".to_string(), vec!["Gold".to_string()])])
+    );
+    // Esc dismisses; Ctrl+C cancels a typed answer.
+    let answer = spawn_questions(&app, vec![question("color", &["Red"], false)]);
+    wait("menu open", || menu_open(&app));
+    press(&app, &["escape"]);
+    assert_eq!(answer.recv_timeout(Duration::from_secs(5)).unwrap(), None);
+    let answer = spawn_questions(&app, vec![question("name", &[], false)]);
+    wait("typing", || app.st().typing.is_some());
+    app.action_cancel();
+    assert_eq!(answer.recv_timeout(Duration::from_secs(5)).unwrap(), None);
+    assert!(app.st().typing.is_none());
+}

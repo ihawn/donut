@@ -25,7 +25,7 @@ use super::render::{
 };
 use super::widgets::{MenuKind, MenuRow};
 use crate::config::{self, config_path, forget_role, remember_role};
-use crate::sessions::{Approve, Decision, Emit, Session, SessionOptions};
+use crate::sessions::{Answers, Approve, Ask, Decision, Emit, Question, Session, SessionOptions};
 use crate::{
     background, conversations, effort, handholding, plugins, ponytail, routing, spend, workspace,
 };
@@ -329,7 +329,8 @@ impl App {
 
     /// Whether every worker is done or one waits on a menu choice.
     pub fn idle(&self) -> bool {
-        self.workers() == 0 || self.st().picking.is_some()
+        let s = self.st();
+        self.workers() == 0 || s.picking.is_some() || s.typing.is_some()
     }
 
     /// Run what the state asked for while it was locked.
@@ -552,6 +553,129 @@ impl App {
         decision
     }
 
+    /// Show a model's questions one at a time and collect the answers. `None` when the user dismissed them,
+    /// so the model is told no answer came. Options are numbered rows; a multi-select question toggles rows
+    /// until Done; "Something else" (or a question with no options) takes a typed answer from the prompt.
+    pub fn answer_questions(&self, questions: &[Question]) -> Option<Answers> {
+        const OTHER: &str = "Something else (type your answer)";
+        let mut answers = Answers::new();
+        for question in questions {
+            let title = match question.header.trim() {
+                "" => "Question".to_string(),
+                header => header.to_string(),
+            };
+            let details = vec![styled(question.question.clone(), bold(Color::White))];
+            let subtitle = "Enter to choose · Esc to dismiss";
+            let options = &question.options;
+            let row =
+                |at: usize, label: String| MenuRow::new(label, json!(at)).described(&options[at].1);
+            let mut chosen = Vec::new();
+            if options.is_empty() {
+                chosen.push(self.read_answer(question)?);
+            } else if question.multi {
+                let mut picked = vec![false; options.len()];
+                loop {
+                    let mut rows: Vec<MenuRow> = (0..options.len())
+                        .map(|at| {
+                            let mark = if picked[at] { "[x] " } else { "[ ] " };
+                            row(at, format!("{mark}{}", options[at].0))
+                        })
+                        .collect();
+                    if question.other {
+                        rows.push(MenuRow::new(OTHER, json!("other")));
+                    }
+                    let count = picked.iter().filter(|p| **p).count();
+                    rows.push(
+                        MenuRow::new("Done", json!("done")).described(&format!("{count} chosen")),
+                    );
+                    let choice = self.choose(
+                        &title,
+                        rows,
+                        MenuKind::Approve,
+                        Some(details.clone()),
+                        subtitle,
+                    )?;
+                    match choice.as_str() {
+                        Some("done") => break,
+                        Some("other") => {
+                            let typed = self.read_answer(question)?;
+                            chosen.push(typed);
+                            break;
+                        }
+                        _ => {
+                            if let Some(at) = choice
+                                .as_u64()
+                                .map(|at| at as usize)
+                                .filter(|at| *at < picked.len())
+                            {
+                                picked[at] = !picked[at];
+                            }
+                        }
+                    }
+                }
+                let mut labels: Vec<String> = (0..options.len())
+                    .filter(|at| picked[*at])
+                    .map(|at| options[at].0.clone())
+                    .collect();
+                labels.append(&mut chosen);
+                chosen = labels;
+            } else {
+                let mut rows: Vec<MenuRow> = (0..options.len())
+                    .map(|at| row(at, options[at].0.clone()))
+                    .collect();
+                if question.other {
+                    rows.push(MenuRow::new(OTHER, json!("other")));
+                }
+                let choice =
+                    self.choose(&title, rows, MenuKind::Approve, Some(details), subtitle)?;
+                match choice.as_u64() {
+                    Some(at) if (at as usize) < options.len() => {
+                        chosen.push(options[at as usize].0.clone())
+                    }
+                    _ => chosen.push(self.read_answer(question)?),
+                }
+            }
+            let shown = if question.secret {
+                "(hidden)".to_string()
+            } else if chosen.is_empty() {
+                "(none)".to_string()
+            } else {
+                chosen.join(", ")
+            };
+            self.say_line(Line::from(vec![
+                span("  ? ", fg(TEAL)),
+                span(format!("{title} · "), fg(GRAY)),
+                span(shown, fg(ORANGE)),
+            ]));
+            answers.push((question.id.clone(), chosen));
+        }
+        Some(answers)
+    }
+
+    /// Wait for the user to type an answer in the prompt and press Enter. `None` if they cancelled.
+    fn read_answer(&self, question: &Question) -> Option<String> {
+        let asked = match question.question.trim() {
+            "" => "The model asks a question.".to_string(),
+            text => text.to_string(),
+        };
+        let (sender, receiver) = mpsc::channel();
+        {
+            let mut s = self.st();
+            s.say_line(Line::from(vec![
+                span("  ? ", fg(TEAL)),
+                span(asked, bold(Color::White)),
+            ]));
+            s.say_line(styled(
+                "    Type your answer and press Enter. Ctrl+C cancels.",
+                fg(DIM),
+            ));
+            s.typing = Some(sender);
+        }
+        let answer = receiver.recv().ok().flatten();
+        self.st().typing = None;
+        answer
+    }
+
     // ---- permission ------------------------------------------------------------------------------------
 
     /// Apply a permission mode to every open session through the provider's own mechanism, and remember it.
@@ -755,6 +879,12 @@ impl App {
                     // Claude in Chrome is on unless /chrome off was saved; review conversations never get it.
                     chrome: chrome_on && purpose != Some("review"),
                     resume_id: resume.clone(),
+                    ask: Some({
+                        let app = self.clone();
+                        Ask(Arc::new(move |questions: &[Question]| {
+                            app.answer_questions(questions)
+                        }))
+                    }),
                 },
                 emit,
                 approve,
@@ -1717,6 +1847,9 @@ impl App {
         self.0.cancelled.store(true, Ordering::SeqCst); // Seen by a step that runs before the turn itself.
         let (active, child) = {
             let mut s = self.st();
+            if let Some(sender) = s.typing.take() {
+                let _ = sender.send(None);
+            }
             if let Some(sender) = s.picking.clone() {
                 let _ = sender.send(None);
             } else if s.menu.is_open() {
@@ -2203,6 +2336,7 @@ impl App {
                 bare: true,
                 chrome: false,
                 resume_id: None,
+                ask: None,
             },
             emit,
             approve,

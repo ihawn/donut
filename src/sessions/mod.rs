@@ -413,6 +413,140 @@ pub type Emit = Arc<dyn Fn(&str, Value) + Send + Sync>;
 /// Claude, the JSON-RPC method and its params for Codex. Blocks until the user answers.
 pub type Approve = Arc<dyn Fn(&str, &Value) -> Decision + Send + Sync>;
 
+/// One question a model asks the user: Claude's AskUserQuestion or Codex's request_user_input.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Question {
+    /// The key the answer goes back under: Codex's question id, Claude's question text.
+    pub id: String,
+    pub header: String,
+    pub question: String,
+    /// (label, description) pairs; empty when only a typed answer fits.
+    pub options: Vec<(String, String)>,
+    /// Several options may be chosen.
+    pub multi: bool,
+    /// A typed answer ("Something else") is allowed.
+    pub other: bool,
+    /// Keep the answer off the screen.
+    pub secret: bool,
+}
+
+/// Answers keyed by question id, in the order asked.
+pub type Answers = Vec<(String, Vec<String>)>;
+
+/// Shows the model's questions and returns the answers, or `None` when the user dismissed them. Blocks.
+#[derive(Clone)]
+pub struct Ask(pub AskFn);
+
+pub type AskFn = Arc<dyn Fn(&[Question]) -> Option<Answers> + Send + Sync>;
+
+impl std::fmt::Debug for Ask {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Ask")
+    }
+}
+
+fn option_pair(option: &Value) -> Option<(String, String)> {
+    let label = match option {
+        Value::String(label) => label.clone(),
+        _ => option.get("label")?.as_str()?.to_string(),
+    };
+    let description = option
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    (!label.is_empty()).then(|| (label, description.to_string()))
+}
+
+fn options_of(question: &Value) -> Vec<(String, String)> {
+    question
+        .get("options")
+        .and_then(Value::as_array)
+        .map(|options| options.iter().filter_map(option_pair).collect())
+        .unwrap_or_default()
+}
+
+/// Codex's `item/tool/requestUserInput` params as questions.
+pub fn codex_questions(params: &Value) -> Vec<Question> {
+    let text = |q: &Value, key: &str| q.get(key).and_then(Value::as_str).unwrap_or("").to_string();
+    params
+        .get("questions")
+        .and_then(Value::as_array)
+        .map(|questions| {
+            questions
+                .iter()
+                .map(|q| {
+                    let options = options_of(q);
+                    Question {
+                        id: text(q, "id"),
+                        header: text(q, "header"),
+                        question: text(q, "question"),
+                        multi: false,
+                        other: q.get("isOther").and_then(Value::as_bool).unwrap_or(false)
+                            || options.is_empty(),
+                        secret: q.get("isSecret").and_then(Value::as_bool).unwrap_or(false),
+                        options,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Claude's AskUserQuestion input as questions. Claude Code keys each answer by the question text.
+pub fn claude_questions(input: &Value) -> Vec<Question> {
+    input
+        .get("questions")
+        .and_then(Value::as_array)
+        .map(|questions| {
+            questions
+                .iter()
+                .filter_map(|q| {
+                    let question = q.get("question")?.as_str()?.to_string();
+                    Some(Question {
+                        id: question.clone(),
+                        header: q
+                            .get("header")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        options: options_of(q),
+                        multi: q
+                            .get("multiSelect")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                        other: true, // Claude Code always offers a typed answer ("Other").
+                        secret: false,
+                        question,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The permission answer for AskUserQuestion: the tool's input with the answers added, or a denial.
+pub fn claude_answer(input: &Value, ask: Option<&Ask>) -> PermissionResult {
+    let questions = claude_questions(input);
+    match ask.and_then(|ask| (ask.0)(&questions)) {
+        Some(answers) => {
+            let mut updated = input.clone();
+            let joined: serde_json::Map<String, Value> = answers
+                .into_iter()
+                .map(|(id, chosen)| (id, json!(chosen.join(", "))))
+                .collect();
+            if let Some(object) = updated.as_object_mut() {
+                object.insert("answers".into(), Value::Object(joined));
+            }
+            PermissionResult::Allow {
+                updated_input: updated,
+            }
+        }
+        None => PermissionResult::Deny {
+            message: "The user dismissed the question without answering.".into(),
+        },
+    }
+}
+
 /// What Python set on a session before `connect()`.
 #[derive(Debug, Clone)]
 pub struct SessionOptions {
@@ -426,6 +560,8 @@ pub struct SessionOptions {
     pub chrome: bool,
     /// The provider's session or thread id to reopen.
     pub resume_id: Option<String>,
+    /// Answers the model's questions to the user; without it they are dismissed.
+    pub ask: Option<Ask>,
 }
 
 impl Default for SessionOptions {
@@ -436,6 +572,7 @@ impl Default for SessionOptions {
             bare: false,
             chrome: false,
             resume_id: None,
+            ask: None,
         }
     }
 }
@@ -591,6 +728,7 @@ struct CodexInner {
     project: PathBuf,
     emit: Emit,
     approve: Approve,
+    ask: Option<Ask>,
     read_only: bool,
     resume_id: Option<String>,
     program: Mutex<Option<PathBuf>>,
@@ -630,6 +768,7 @@ impl CodexSession {
                 project: project.to_path_buf(),
                 emit,
                 approve,
+                ask: options.ask,
                 read_only: options.read_only,
                 resume_id: options.resume_id,
                 program: Mutex::new(None),
@@ -885,6 +1024,16 @@ impl CodexInner {
             let params = event.get("params").cloned().unwrap_or_else(|| json!({}));
             let decision = (self.approve)(method, &params);
             let _ = self.send(&json!({"id": id, "result": {"decision": codex_decision(decision)}}));
+        } else if method == "item/tool/requestUserInput" {
+            let questions = codex_questions(event.get("params").unwrap_or(&Value::Null));
+            let answers = self.ask.as_ref().and_then(|ask| (ask.0)(&questions));
+            // No answers (dismissed, or nothing to ask with) tells Codex the user did not answer.
+            let result: serde_json::Map<String, Value> = answers
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(id, chosen)| (id, json!({"answers": chosen})))
+                .collect();
+            let _ = self.send(&json!({"id": id, "result": {"answers": result}}));
         } else {
             self.emit(
                 "error",
@@ -933,7 +1082,14 @@ impl Session for CodexSession {
             .or_else(|| which::which("codex").ok())
             .unwrap_or_else(|| "codex".into());
         let mut child = Command::new(program)
-            .args(["app-server", "--stdio"])
+            // The -c flag lets the model ask questions outside plan mode as item/tool/requestUserInput, which
+            // Donut answers. Without it Codex posts them as an async message and sleeps until a reply comes.
+            .args([
+                "app-server",
+                "--stdio",
+                "-c",
+                "features.default_mode_request_user_input=true",
+            ])
             .current_dir(&inner.project)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1216,6 +1372,7 @@ struct ClaudeInner {
     project: PathBuf,
     emit: Emit,
     approve: Approve,
+    ask: Option<Ask>,
     read_only: bool,
     bare: bool,
     chrome: bool,
@@ -1250,6 +1407,7 @@ impl ClaudeSession {
                 project: project.to_path_buf(),
                 emit,
                 approve,
+                ask: options.ask,
                 read_only: options.read_only,
                 bare: options.bare,
                 chrome: options.chrome,
@@ -1613,16 +1771,20 @@ impl Session for ClaudeSession {
         let options = inner.options();
         let approver: ToolApprover = {
             let approve = Arc::clone(&inner.approve);
-            Arc::new(
-                move |name: &str, input: &Value| match approve(name, input) {
+            let ask = inner.ask.clone();
+            Arc::new(move |name: &str, input: &Value| {
+                if name == "AskUserQuestion" {
+                    return claude_answer(input, ask.as_ref());
+                }
+                match approve(name, input) {
                     Decision::Yes | Decision::Always => PermissionResult::Allow {
                         updated_input: input.clone(),
                     },
                     Decision::No => PermissionResult::Deny {
                         message: "User declined".into(),
                     },
-                },
-            )
+                }
+            })
         };
         let (client, stream) = ClaudeClient::connect(&options, Some(approver))?;
         {

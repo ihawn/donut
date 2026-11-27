@@ -251,6 +251,13 @@ impl App {
                 return;
             }
             s.draft.clear();
+            if let Some(sender) = s.typing.take() {
+                // The answer to a model's question: it is not a new message and stays out of the history.
+                let _ = sender.send(Some(render::expand_images(&text, &s.images)));
+                drop(s);
+                self.after_edit();
+                return;
+            }
             if s.history.last() != Some(&text) {
                 s.history.push(text.clone());
             }

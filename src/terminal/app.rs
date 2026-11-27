@@ -206,6 +206,8 @@ pub struct State {
     pub turn_tools: Vec<String>,
     pub last_answer: String,
     pub picking: Option<Sender<Option<Value>>>,
+    /// While a model's question waits for a typed answer, Enter sends the prompt here, not to the model.
+    pub typing: Option<Sender<Option<String>>>,
     pub background_tasks: Vec<BackgroundTask>,
     pub threads: HashMap<String, u64>,
     pub waiting_resume: Vec<(String, Value)>,
@@ -473,6 +475,7 @@ impl State {
             turn_tools: Vec::new(),
             last_answer: String::new(),
             picking: None,
+            typing: None,
             background_tasks: Vec::new(),
             threads: HashMap::new(),
             waiting_resume: Vec::new(),
