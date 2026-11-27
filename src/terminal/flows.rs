@@ -776,11 +776,11 @@ impl App {
                 key: key.clone(),
                 session,
                 profile: profile.clone(),
-                task: Some(ponytail::Task::new(
-                    &project,
-                    &engine,
-                    text_of(profile, "model"),
-                )),
+                task: Some({
+                    let mut task = ponytail::Task::new(&project, &engine, text_of(profile, "model"));
+                    task.level = ponytail::level(profile, &project);
+                    task
+                }),
                 conversation_id: conversation.clone(),
                 donut_seen: 0,
                 wake_buffer: None,
@@ -983,9 +983,7 @@ impl App {
                 return Ok(());
             };
             task.turn(text, started.elapsed().as_secs_f64(), &usage);
-            if engine_of(&profile) == Some("claude") {
-                task.level = ponytail::level(&profile, &project);
-            }
+            task.level = ponytail::level(&profile, &project);
             task.clone()
         };
         if let Err(error) = ponytail::record(&task) {

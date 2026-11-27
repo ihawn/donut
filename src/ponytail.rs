@@ -15,7 +15,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::conversations::{now_seconds, resolve, write_private};
-use crate::plugins::{claude_dir, home_dir};
+use crate::plugins::{claude_dir, codex_dir, home_dir};
 
 pub const LEVELS: [&str; 3] = ["lite", "full", "ultra"];
 pub const HEADER: &str = "key,started,project,name,cost_usd,turns,agent_minutes,tokens_total,tokens_output,\
@@ -55,9 +55,14 @@ fn normpath(path: &str) -> String {
     }
 }
 
-/// The live Ponytail level for this Claude login and project, as its hooks wrote it; "off" when none.
+/// The live Ponytail level for this login and project, as its hooks wrote it; "off" when none.
+/// Claude's hooks write under the Claude config dir; Codex's write under the plugin's data dir (`PLUGIN_DATA`).
 pub fn level(profile: &Value, project: &Path) -> String {
-    let base = claude_dir(profile);
+    let base = if profile.get("engine").and_then(Value::as_str) == Some("codex") {
+        codex_dir().join("plugins/data/ponytail-ponytail")
+    } else {
+        claude_dir(profile)
+    };
     let digest: String = Sha256::digest(normpath(&project.to_string_lossy()).as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -519,6 +524,21 @@ mod tests {
             .collect();
         write(&claude.join("ponytail-modes").join(digest), "lite");
         assert_eq!(level(&profile, &project), "lite");
+    }
+
+    #[test]
+    fn test_level_reads_codex_plugin_data_for_codex() {
+        let env = env();
+        let codex = env.root.path().join("codex");
+        unsafe { std::env::set_var("CODEX_HOME", &codex) };
+        let claude = env.root.path().join("claude");
+        write(&claude.join(".ponytail-active"), "lite");
+        let profile = json!({"engine": "codex", "claude_config_dir": claude});
+        let project = env.root.path().join("app");
+        assert_eq!(level(&profile, &project), "off");
+        write(&codex.join("plugins/data/ponytail-ponytail/.ponytail-active"), "full\n");
+        assert_eq!(level(&profile, &project), "full");
+        unsafe { std::env::remove_var("CODEX_HOME") };
     }
 
     #[test]
