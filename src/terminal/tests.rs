@@ -3730,3 +3730,85 @@ fn test_ponytail_runs_out_of_sight_and_ponytail_options_holds_its_menu() {
     assert_eq!(load_config()["ponytail_band"], json!(true));
     assert!(app.st().band_line().is_some());
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// Orchestrate mode
+
+#[test]
+fn test_orchestrator_workers_line_is_read_from_the_reply() {
+    use super::render::orchestrator_workers;
+    assert_eq!(
+        orchestrator_workers("Two tickets.\n\nDONUT-WORKERS: 3"),
+        Some(3)
+    );
+    assert_eq!(orchestrator_workers("`DONUT-WORKERS: 2`"), Some(2));
+    assert_eq!(orchestrator_workers("No tickets this time."), None);
+}
+
+#[test]
+fn test_orchestrate_runs_rounds_of_workers_and_hands_results_back() {
+    let env = env();
+    let (app, fakes) = setup(&env, claude_config());
+    send(&app, "/orchestrate");
+    assert_eq!(app.st().mode, "orch");
+    assert!(
+        status_text(&app).contains("orchestrator"),
+        "{}",
+        status_text(&app)
+    );
+    send(&app, "hello"); // Opens the orchestrator's session; no tickets, so no workers.
+    let orchestrator = fakes.first();
+    assert_eq!(orchestrator.purpose.as_deref(), Some("orch"));
+    let lanes = workspace::lanes_dir(&env.project(), Some(&app.orchestrator_session()));
+    let replies: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![
+        "The wall jump works: both tickets are done.".to_string(),
+        "Two parts, in parallel.\n\nDONUT-WORKERS: 3".to_string(),
+    ]));
+    let (sink, to_do) = (Arc::clone(&replies), lanes.join("to_do"));
+    orchestrator.set_hook(move |fake, _| {
+        let reply = sink.lock().unwrap().pop().unwrap();
+        if reply.contains("DONUT-WORKERS") {
+            std::fs::create_dir_all(&to_do).unwrap();
+            std::fs::write(to_do.join("001_wall-jump.md"), "# Wall jump\n").unwrap();
+            std::fs::write(to_do.join("002_wall-slide.md"), "# Wall slide\n").unwrap();
+        }
+        (fake.emit)("text", json!(reply));
+    });
+    let seen: Arc<Mutex<Vec<Vec<String>>>> = Arc::default();
+    let (runs, root) = (Arc::clone(&seen), lanes.clone());
+    app.set_runner(Arc::new(move |spec| {
+        runs.lock().unwrap().push(spec.args.clone());
+        let done = root.join("done");
+        std::fs::create_dir_all(&done).unwrap();
+        for name in ["001_wall-jump.md", "002_wall-slide.md"] {
+            std::fs::rename(root.join("to_do").join(name), done.join(name)).unwrap();
+        }
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg("echo '[1/2] 001_wall-jump.md — fresh context'")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+    }));
+    send(&app, "add a wall jump");
+    let args = seen.lock().unwrap()[0].clone();
+    let after = |flag: &str| args[args.iter().position(|a| a == flag).unwrap() + 1].clone();
+    assert_eq!(after("--session"), app.orchestrator_session()); // Its own tickets, never /work's.
+    assert_eq!(after("--parallel"), "3"); // As many workers as the orchestrator asked for.
+    assert!(args.contains(&"--no-pr".to_string()));
+    let calls = orchestrator.calls();
+    let first = &calls[calls.len() - 2];
+    assert!(first.contains("DONUT-WORKERS: N"), "{first}");
+    assert!(first.contains("Ticket scope is somewhat broad"), "{first}"); // /handholding medium.
+    let second = calls.last().unwrap();
+    assert!(
+        second.contains("Round 1 of the workers finished"),
+        "{second}"
+    );
+    assert!(second.contains("done/001_wall-jump.md"), "{second}");
+    let text = body(&app);
+    assert!(text.contains("Round 1 · 2 tickets · 3 workers"), "{text}");
+    assert!(text.contains("001_wall-jump.md — fresh context"), "{text}"); // The workers run in view.
+    assert!(text.contains("The wall jump works"), "{text}");
+    assert_eq!(seen.lock().unwrap().len(), 1); // The last reply wrote no tickets: no second round.
+}

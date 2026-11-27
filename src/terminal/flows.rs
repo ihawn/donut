@@ -31,6 +31,13 @@ use crate::{
 };
 
 /// What `new_session` is given, plus the alias and purpose so a test factory can tell sessions apart.
+/// The line the orchestrator ends a round with: how many workers to run at once.
+pub const ORCH_WORKERS: &str = "DONUT-WORKERS:";
+/// At most this many workers at once, whatever the orchestrator asks.
+pub const ORCH_MAX_WORKERS: usize = 8;
+/// At most this many rounds of tickets per message.
+pub const ORCH_MAX_ROUNDS: usize = 12;
+
 pub struct SessionSpec {
     pub alias: String,
     pub purpose: Option<String>,
@@ -1481,6 +1488,8 @@ impl App {
             self.solo(text)
         } else if mode == "review" {
             self.review_chat(text)
+        } else if mode == "orch" {
+            self.orchestrate(text)
         } else {
             if mode == "work" {
                 // Conversation goes to the planner (or the worker in /solo); /work only runs tickets.
@@ -1713,6 +1722,12 @@ impl App {
 
     /// /work: run tickets in a child Donut with this window's models, showing its output.
     pub fn work_tickets(&self, choice: &str) -> Result<()> {
+        self.run_workers(choice, None).map(|_| ())
+    }
+
+    /// Run tickets with the worker; `lanes_session` runs another session's tickets (the orchestrator's).
+    /// Returns the worker run's exit code.
+    fn run_workers(&self, choice: &str, lanes_session: Option<&str>) -> Result<i32> {
         let words = render::work_arguments(choice).map_err(wrong)?;
         let (alias, project, session_name, permission, verbosity, base, work_profile, review, plan) = {
             let s = self.st();
@@ -1731,6 +1746,7 @@ impl App {
         let Some(alias) = alias else {
             bail!("Run donut setup to configure a worker.")
         };
+        let session_name = lanes_session.map(str::to_string).or(session_name);
         let installer = Arc::clone(&self.hooks().installer);
         installer(&project, session_name.as_deref())?;
         let temp = tempfile::Builder::new().prefix("donut-worker-").tempdir()?;
@@ -1872,6 +1888,157 @@ impl App {
                 Some(CORAL),
             );
         }
+        Ok(code)
+    }
+
+    /// The orchestrator's ticket folder: a session of its own beside this window's, so /work never runs its tickets.
+    pub fn orchestrator_session(&self) -> String {
+        match self
+            .st()
+            .session_name
+            .as_deref()
+            .filter(|name| !name.is_empty())
+        {
+            Some(name) => format!("{name}-orchestrate"),
+            None => "orchestrate".to_string(),
+        }
+    }
+
+    /// Orchestrate mode: a hands-on planner. Each round the orchestrator writes tickets (scoped by /handholding)
+    /// and says how many workers to run; Donut runs them at once with the worker model, in view, and hands the
+    /// results back. It ends when the orchestrator answers without new tickets.
+    pub fn orchestrate(&self, text: &str) -> Result<()> {
+        let (project, alias, profile, config, worker) = {
+            let s = self.st();
+            (
+                s.project.clone(),
+                s.sel("orch").unwrap_or_default(),
+                s.prof("orch"),
+                s.config.clone(),
+                model_name(&s.prof("work"), s.sel("work").as_deref()),
+            )
+        };
+        if is_empty_profile(&self.st().prof("work")) {
+            bail!("Orchestrate mode needs a worker: pick one with /worker.");
+        }
+        let session = self.orchestrator_session();
+        let installer = Arc::clone(&self.hooks().installer);
+        installer(&project, Some(&session))?;
+        let lanes = workspace::lanes_dir(&project, Some(&session));
+        let folder = workspace::relative(&project, &lanes);
+        let handle = self.session(&alias, &profile, Some("orch"), SessionRequest::default())?;
+        {
+            let mut s = self.st();
+            s.active = Some(handle.clone());
+            s.name_task(text);
+            let shown = render::label_images(text, &s.images);
+            s.say_line(styled(format!("> {shown}"), bold(CORAL)));
+        }
+        let mut prompt = format!(
+            "You are Donut's orchestrator, a hands-on planner. Get the user's request below done by sending work to \
+             worker subagents (model: {worker}) and checking what they did. Read skills/donut-planner/SKILL.md for \
+             the ticket format. Research what you need yourself; leave the changes to the workers, apart from small \
+             housekeeping. A question or lookup you can answer yourself: answer it and write no ticket.\n\
+             To send work: write tickets in {folder}to_do/ (leave every other tickets folder alone). Tickets without \
+             dependencies on each other run at the same time; set dependencies where order matters. {} \
+             Then end your reply with one line `{ORCH_WORKERS} N`, where N is how many workers to run at once \
+             (1 to {ORCH_MAX_WORKERS}); use as many as the work can use in parallel. Donut runs the tickets at once \
+             and sends you the results. Check the work (read the changes, run the checks), then send fix-up or next \
+             tickets the same way. When the request is done, or needs the user, reply without new tickets and give \
+             the result first, in a few lines. Do not narrate your steps.\n\nUser request:\n{text}",
+            handholding::instruction(&config)
+        );
+        for round in 1..=ORCH_MAX_ROUNDS {
+            let before = crate::planner_output::ticket_snapshot(&project, Some(&lanes))?;
+            {
+                let mut s = self.st();
+                s.active = Some(handle.clone());
+                s.start_turn(
+                    "orch",
+                    "",
+                    if round == 1 {
+                        "planning"
+                    } else {
+                        "checking the workers' results"
+                    },
+                );
+                s.reset_turn();
+            }
+            self.ask(text, Some(&prompt))?;
+            self.st().answer();
+            self.log_turn("orch", "orch", text);
+            let reply = self.st().turn_text.clone();
+            let after = crate::planner_output::ticket_snapshot(&project, Some(&lanes))?;
+            let new: Vec<(String, std::path::PathBuf)> = after
+                .iter()
+                .filter(|(key, _)| !before.iter().any(|(known, _)| known == key))
+                .cloned()
+                .collect();
+            if new.is_empty() || self.0.cancelled.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            let workers = render::orchestrator_workers(&reply)
+                .unwrap_or(new.len())
+                .clamp(1, ORCH_MAX_WORKERS);
+            {
+                let mut s = self.st();
+                s.say_line(styled(
+                    format!(
+                        "  Round {round} · {} ticket{} · {workers} worker{} ({worker})",
+                        new.len(),
+                        if new.len() == 1 { "" } else { "s" },
+                        if workers == 1 { "" } else { "s" }
+                    ),
+                    bold(CORAL),
+                ));
+                for (_, path) in &new {
+                    let shown = path
+                        .strip_prefix(&project)
+                        .unwrap_or(path)
+                        .display()
+                        .to_string();
+                    s.say(&format!("    {shown}"), Some(GRAY));
+                }
+            }
+            let code = self.run_workers(
+                &format!("next all parallel {workers} no-pr"),
+                Some(&session),
+            )?;
+            if self.0.cancelled.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            let done = crate::planner_output::ticket_snapshot(&project, Some(&lanes))?;
+            let report: Vec<String> = new
+                .iter()
+                .map(|(key, _)| {
+                    let path = done
+                        .iter()
+                        .find(|(known, _)| known == key)
+                        .map(|(_, path)| {
+                            path.strip_prefix(&project)
+                                .unwrap_or(path)
+                                .display()
+                                .to_string()
+                        })
+                        .unwrap_or_else(|| format!("{key} (gone)"));
+                    format!("- {path}")
+                })
+                .collect();
+            self.say_dim(&format!(
+                "  Results go back to the orchestrator (round {round})."
+            ));
+            prompt = format!(
+                "Round {round} of the workers finished (exit code {code}). Each ticket's folder shows how it ended \
+                 (done, blocked, on_hold, or still to_do or in_progress):\n{}\nCheck the results against the user's \
+                 request. Send fix-up or next tickets the same way, ending with `{ORCH_WORKERS} N`, or, when it is \
+                 done or needs the user, reply without new tickets and give the result.",
+                report.join("\n")
+            );
+        }
+        self.say(
+            &format!("  The orchestrator stopped after {ORCH_MAX_ROUNDS} rounds; send a message to go on."),
+            Some(CORAL),
+        );
         Ok(())
     }
 

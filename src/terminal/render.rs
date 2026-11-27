@@ -55,12 +55,14 @@ pub const ROLE_TITLES: &[(&str, &str)] = &[
     ("review", "reviewer"),
     ("plan", "planner"),
     ("work", "worker"),
+    ("orch", "orchestrator"),
 ];
 pub const ROLE_COMMANDS: &[(&str, &str)] = &[
     ("solo", "/soloist"),
     ("review", "/reviewer"),
     ("plan", "/planner"),
     ("work", "/worker"),
+    ("orch", "/orchestrator"),
 ];
 
 /// The title of a role, or the role itself when unknown.
@@ -84,6 +86,9 @@ pub fn mode_placeholder(mode: &str) -> &'static str {
             "Ask the reviewer to check something (it reads, never edits), or type / for commands"
         }
         "solo" => "Ask the soloist anything or tell it what to change, or type / for commands",
+        "orch" => {
+            "Say what to get done: the orchestrator plans it and runs workers, or type / for commands"
+        }
         _ => "Describe what to plan, or type / for commands",
     }
 }
@@ -93,6 +98,7 @@ pub fn mode_badge(mode: &str) -> Color {
         "plan" => ORANGE,
         "work" => CORAL,
         "review" => NAVY,
+        "orch" => CORAL,
         _ => TEAL,
     }
 }
@@ -182,6 +188,8 @@ pub const COMPLEX_COMMANDS: &[&str] = &[
     "/worker",
     "/reviewer",
     "/soloist",
+    "/orchestrate",
+    "/orchestrator",
     "/handholding",
     "/session",
     "/next",
@@ -210,6 +218,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/work",
         "Run tickets with the worker, one fresh context each",
     ),
+    (
+        "/orchestrate",
+        "Orchestrate mode: the orchestrator plans as it goes and runs as many workers as it needs",
+    ),
     ("/soloist", "Choose the soloist's account and model"),
     (
         "/reviewer",
@@ -217,6 +229,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     ("/planner", "Choose the planner's account and model"),
     ("/worker", "Choose the worker's account and model"),
+    (
+        "/orchestrator",
+        "Choose the orchestrator's account and model",
+    ),
     (
         "/handholding",
         "How small and spelled-out the planner makes tickets: low, medium or high (for weak workers)",
@@ -986,6 +1002,15 @@ pub fn markdown(source: &str) -> Vec<RichLine> {
 // Commands and names
 
 /// What follows --work on the command line for a /work choice such as "next all parallel 3 checkpoint".
+/// N from the orchestrator's last `DONUT-WORKERS: N` line, if it wrote one.
+pub fn orchestrator_workers(reply: &str) -> Option<usize> {
+    reply.lines().rev().find_map(|line| {
+        let line = line.trim().trim_matches('`').trim();
+        let rest = line.strip_prefix("DONUT-WORKERS:")?;
+        rest.trim().trim_matches('`').trim().parse().ok()
+    })
+}
+
 pub fn work_arguments(choice: &str) -> Result<Vec<String>, String> {
     let usage = "Use /work next COUNT [parallel N] [checkpoint] [no-pr] (COUNT is a positive integer or all).";
     let mut words: Vec<String> = choice.split_whitespace().map(str::to_string).collect();

@@ -392,6 +392,25 @@ impl State {
             selected.insert("work".into(), Some(routing::AUTO.into()));
             profiles.insert("work".into(), ladder[0].clone());
         }
+        // The orchestrator follows the planner until /orchestrator picks its own model.
+        let orchestrator = if alias.is_some() {
+            None
+        } else {
+            role_choice(&config, "orch")
+        };
+        match orchestrator {
+            Some((name, profile)) => {
+                selected.insert("orch".into(), Some(name));
+                profiles.insert("orch".into(), profile);
+            }
+            None => {
+                selected.insert("orch".into(), selected.get("plan").cloned().flatten());
+                profiles.insert(
+                    "orch".into(),
+                    profiles.get("plan").cloned().unwrap_or_else(|| json!({})),
+                );
+            }
+        }
         // No default soloist: the first solo message asks. donut -m ALIAS makes ALIAS the soloist too.
         let soloist = match alias {
             Some(alias) => Some((alias.to_string(), aliases[alias].clone())),
@@ -566,7 +585,7 @@ impl State {
 
     /// Solo and review keep conversations of their own, apart from the planner's, even on the same model.
     pub fn purpose(&self) -> Option<String> {
-        matches!(self.mode.as_str(), "solo" | "review").then(|| self.mode.clone())
+        matches!(self.mode.as_str(), "solo" | "review" | "orch").then(|| self.mode.clone())
     }
 
     pub fn lanes(&self) -> PathBuf {
@@ -1112,7 +1131,7 @@ impl State {
                 );
             }
         }
-        for role in ["solo", "review", "plan", "work"] {
+        for role in ["solo", "review", "plan", "work", "orch"] {
             // Models picked by hand may not be saved aliases.
             let profile = self.prof(role);
             let alias = self.sel(role);

@@ -13,7 +13,7 @@ use super::app::{
 };
 use super::flows::{App, SessionRequest};
 use super::render::{
-    self, COMPLEX_COMMANDS, DIM, GRAY, NEEDS_MODEL, ORANGE, TEAL, VERBOSITY, model_name,
+    self, COMPLEX_COMMANDS, CORAL, DIM, GRAY, NEEDS_MODEL, ORANGE, TEAL, VERBOSITY, model_name,
 };
 use super::widgets::MenuRow;
 use crate::providers::PERMISSION_MODES;
@@ -23,7 +23,7 @@ use crate::summaries::{
 use crate::{handholding, plugins, tickets};
 
 const HELP_SIMPLE: &str = "/harder (a stronger model for this conversation) · /routing · /model · /resume · /clear (or /new) · /permissions [ask|accept_edits|auto|full] · /auto · /effort · /verbosity [quiet|normal|verbose|full] · /chrome [on|off] · /harness [auto|claude|codex] · /usage · /plugin · /mcp · /context · /copy · /project [PATH] · /rename · /login · /native · /complex (show every feature) · /exit\nDonut rates your first message in a conversation and picks the model for it; the model stays until /clear. !COMMAND runs a shell command in the project. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued.";
-const HELP_COMPLEX: &str = "/solo · /review · /plan · /work [next COUNT] [parallel N] [checkpoint] · /resume · /session [NAME|new] · /next [COUNT] · /prev [COUNT] · /project [PATH] · /soloist · /reviewer [ALIAS|planner|off] · /planner · /worker · /handholding [low|medium|high] · /model · /permissions [ask|accept_edits|auto|full] · /auto · /verbosity [quiet|normal|verbose|full] · /chrome [on|off] · /harness [auto|claude|codex] · /usage · /plugin · /mcp · /context · /clear (or /new) · /ponytail-options · /copy · /login · /native · /harder · /routing · /simple · /exit\n!COMMAND runs a shell command in the project; the model sees its output with your next message. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Installed plugin and skill commands are listed under / and forwarded to the selected session in its own syntax. Use /native for built-ins requiring the provider’s own UI.";
+const HELP_COMPLEX: &str = "/solo · /review · /plan · /work [next COUNT] [parallel N] [checkpoint] · /resume · /session [NAME|new] · /next [COUNT] · /prev [COUNT] · /project [PATH] · /soloist · /reviewer [ALIAS|planner|off] · /planner · /worker · /orchestrate · /orchestrator · /handholding [low|medium|high] · /model · /permissions [ask|accept_edits|auto|full] · /auto · /verbosity [quiet|normal|verbose|full] · /chrome [on|off] · /harness [auto|claude|codex] · /usage · /plugin · /mcp · /context · /clear (or /new) · /ponytail-options · /copy · /login · /native · /harder · /routing · /simple · /exit\n!COMMAND runs a shell command in the project; the model sees its output with your next message. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Installed plugin and skill commands are listed under / and forwarded to the selected session in its own syntax. Use /native for built-ins requiring the provider’s own UI.";
 
 fn is_count(text: &str) -> bool {
     !text.is_empty()
@@ -67,10 +67,11 @@ impl App {
             "/simple" | "/complex" => self.set_interface(&name[1..]),
             "/harder" => self.harder(),
             "/routing" => self.show_routing(),
-            "/planner" | "/worker" | "/soloist" => {
+            "/planner" | "/worker" | "/soloist" | "/orchestrator" => {
                 let role = match name {
                     "/planner" => "plan",
                     "/worker" => "work",
+                    "/orchestrator" => "orch",
                     _ => "solo",
                 };
                 self.choose_model(role, args.first().copied())?;
@@ -105,6 +106,24 @@ impl App {
                     span(format!(" · {who}"), bold(ORANGE)),
                 ]));
                 s.say("  Ask the reviewer to check code or changes. It reads the project and never edits it.", Some(DIM));
+            }
+            "/orchestrate" => {
+                if !self.ensure_role("orch")? || !self.ensure_role("work")? {
+                    return Ok(());
+                }
+                let mut s = self.st();
+                s.set_mode("orch");
+                let who = model_name(&s.prof("orch"), s.sel("orch").as_deref());
+                let workers = model_name(&s.prof("work"), s.sel("work").as_deref());
+                s.say_line(Line::from(vec![
+                    span("  Orchestrate mode", bold(CORAL)),
+                    span(format!(" · {who} · workers {workers}"), bold(ORANGE)),
+                ]));
+                s.say(
+                    "  Say what to get done. The orchestrator plans as it goes, runs as many workers as it needs \
+                     on tickets scoped by /handholding, checks their work and sends more until it is done.",
+                    Some(DIM),
+                );
             }
             "/plan" => {
                 if !self.ensure_role("plan")? {
