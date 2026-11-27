@@ -3805,7 +3805,8 @@ fn test_orchestrate_runs_rounds_of_workers_and_hands_results_back() {
         second.contains("Round 1 of the workers finished"),
         "{second}"
     );
-    assert!(second.contains("done/001_wall-jump.md"), "{second}");
+    let ticket = Path::new("done").join("001_wall-jump.md");
+    assert!(second.contains(ticket.to_str().unwrap()), "{second}");
     let text = body(&app);
     assert!(text.contains("Round 1 · 2 tickets · 3 workers"), "{text}");
     assert!(text.contains("001_wall-jump.md — fresh context"), "{text}"); // The workers run in view.
