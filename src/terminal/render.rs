@@ -51,16 +51,16 @@ pub static URL: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Each mode talks to the model of the role with the same key.
 pub const ROLE_TITLES: &[(&str, &str)] = &[
+    ("solo", "soloist"),
+    ("review", "reviewer"),
     ("plan", "planner"),
     ("work", "worker"),
-    ("review", "reviewer"),
-    ("solo", "soloist"),
 ];
 pub const ROLE_COMMANDS: &[(&str, &str)] = &[
+    ("solo", "/soloist"),
+    ("review", "/reviewer"),
     ("plan", "/planner"),
     ("work", "/worker"),
-    ("review", "/reviewer"),
-    ("solo", "/soloist"),
 ];
 
 /// The title of a role, or the role itself when unknown.
@@ -195,6 +195,14 @@ pub const NEEDS_MODEL: &[&str] = &[
 
 pub const COMMANDS: &[(&str, &str)] = &[
     (
+        "/solo",
+        "Solo mode: talk to the soloist directly, like Claude Code",
+    ),
+    (
+        "/review",
+        "Review mode: ask the reviewer to check code; it reads, never edits",
+    ),
+    (
         "/plan",
         "Plan mode: describe work and the planner writes tickets",
     ),
@@ -202,21 +210,13 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/work",
         "Run tickets with the worker, one fresh context each",
     ),
-    (
-        "/review",
-        "Review mode: ask the reviewer to check code; it reads, never edits",
-    ),
-    (
-        "/solo",
-        "Solo mode: talk to the soloist directly, like Claude Code",
-    ),
-    ("/planner", "Choose the planner's account and model"),
-    ("/worker", "Choose the worker's account and model"),
+    ("/soloist", "Choose the soloist's account and model"),
     (
         "/reviewer",
         "Choose who reviews: same as planner, any model, or off",
     ),
-    ("/soloist", "Choose the soloist's account and model"),
+    ("/planner", "Choose the planner's account and model"),
+    ("/worker", "Choose the worker's account and model"),
     (
         "/handholding",
         "How small and spelled-out the planner makes tickets: low, medium or high (for weak workers)",

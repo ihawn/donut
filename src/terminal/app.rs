@@ -727,10 +727,10 @@ impl State {
                 Some(GRAY),
             );
             vec![
+                ("/solo", "direct"),
+                ("/review", "check"),
                 ("/plan", "tickets"),
                 ("/work", "build"),
-                ("/review", "check"),
-                ("/solo", "direct"),
                 ("/", "commands"),
                 ("!", "shell"),
                 ("Shift+Enter", "newline"),
@@ -1112,7 +1112,7 @@ impl State {
                 );
             }
         }
-        for role in ["plan", "work", "review", "solo"] {
+        for role in ["solo", "review", "plan", "work"] {
             // Models picked by hand may not be saved aliases.
             let profile = self.prof(role);
             let alias = self.sel(role);

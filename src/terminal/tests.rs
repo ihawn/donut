@@ -942,7 +942,7 @@ fn test_typing_slash_filters_inline_and_enter_runs_the_top_match() {
     let sent = recorded(&app);
     press(&app, &["/"]);
     assert!(menu_open(&app));
-    assert_eq!(app.st().menu.visible_rows[0].label, "/plan");
+    assert_eq!(app.st().menu.visible_rows[0].label, "/solo");
     press(&app, &["m", "o"]);
     assert_eq!(labels(&app), ["/model"]);
     assert_eq!(app.st().menu.highlighted(), Some(0));
