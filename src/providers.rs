@@ -6,7 +6,8 @@ use std::sync::LazyLock;
 
 use anyhow::{Result, bail};
 use regex::Regex;
-use serde_json::Value;
+use serde_json::{Value, json};
+use sha2::Digest;
 
 /// "qwen" for ollama and openai engines, else the engine itself.
 pub fn provider_family(engine: &str) -> &str {
@@ -323,6 +324,9 @@ pub fn command_with(
     environment: &HashMap<String, String>,
     which: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Launch> {
+    // With /harness, the model runs in another provider's CLI (crate::harness).
+    let effective = crate::harness::effective(profile)?;
+    let profile = &effective;
     validate(profile)?;
     let engine = profile["engine"].as_str().unwrap_or_default();
     let model = text(profile, "model");
@@ -335,6 +339,11 @@ pub fn command_with(
         && let Some(directory) = text(profile, "claude_config_dir")
     {
         env.insert("CLAUDE_CONFIG_DIR".into(), expand_and_resolve(directory));
+    }
+    if let Some(extra) = profile.get("env").and_then(Value::as_object) {
+        for (key, value) in extra {
+            env.insert(key.clone(), value.as_str().unwrap_or("").to_string());
+        }
     }
     let mut args: Vec<String> = Vec::new();
     let mut add = |items: &[&str]| args.extend(items.iter().map(|item| item.to_string()));
@@ -360,6 +369,15 @@ pub fn command_with(
         }
         if let Some(effort) = text(profile, "effort") {
             add(&["-c", &format!("model_reasoning_effort=\"{effort}\"")]);
+        }
+        for item in profile
+            .get("codex_config")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            add(&["-c", item]);
         }
         add(&["-"]);
     } else if engine == "claude" {
@@ -447,6 +465,14 @@ pub fn command_with(
                 text(profile, "base_url").unwrap_or_default(),
             ]);
         }
+        if let Some(level) = text(profile, "effort") {
+            // Qwen Code has no flag for it: a system settings file, the highest layer, carries the level.
+            let path = qwen_effort_settings(model.unwrap_or(""), level, &env)?;
+            env.insert(
+                "QWEN_CODE_SYSTEM_SETTINGS_PATH".into(),
+                path.to_string_lossy().into_owned(),
+            );
+        }
         add(&["--prompt", "Follow the request on stdin."]);
     }
     let Some(binary) = which(&args[0]) else {
@@ -454,6 +480,65 @@ pub fn command_with(
     };
     args[0] = binary;
     Ok((args, env))
+}
+
+/// Qwen Code system settings that send `reasoning_effort` for this level, written to a private temp file.
+///
+/// They keep any system settings already set. A model the user's own Qwen settings pin (`modelProviders`) takes
+/// its own generationConfig over the general one, so its entry is copied here with the level added.
+fn qwen_effort_settings(
+    model: &str,
+    level: &str,
+    environment: &HashMap<String, String>,
+) -> Result<std::path::PathBuf> {
+    let read = |path: &std::path::Path| -> Value {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str(text.trim_start_matches('\u{feff}')).ok())
+            .unwrap_or_else(|| json!({}))
+    };
+    let mut settings = environment
+        .get("QWEN_CODE_SYSTEM_SETTINGS_PATH")
+        .map(|path| read(std::path::Path::new(path)))
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    let wire = json!(crate::effort::wire_level(level));
+    settings["model"]["generationConfig"]["extra_body"]["reasoning_effort"] = wire.clone();
+    let home = environment
+        .get("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    let user = read(&home.join(".qwen").join("settings.json"));
+    if !settings.get("modelProviders").is_some_and(Value::is_object)
+        && let Some(providers) = user.get("modelProviders").filter(|p| p.is_object())
+    {
+        settings["modelProviders"] = providers.clone();
+    }
+    if let Some(groups) = settings
+        .get_mut("modelProviders")
+        .and_then(Value::as_object_mut)
+    {
+        for entry in groups
+            .values_mut()
+            .filter_map(Value::as_array_mut)
+            .flatten()
+        {
+            if entry.get("id").and_then(Value::as_str) == Some(model) {
+                entry["generationConfig"]["extra_body"]["reasoning_effort"] = wire.clone();
+            }
+        }
+    }
+    let folder = std::env::temp_dir().join("donut-qwen-settings");
+    std::fs::create_dir_all(&folder)?;
+    let text = serde_json::to_string_pretty(&settings)?;
+    let digest: String = sha2::Sha256::digest(text.as_bytes())
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let path = folder.join(format!("{digest}.json"));
+    crate::conversations::write_private(&path, &text)?;
+    Ok(path)
 }
 
 /// The OpenAI-compatible endpoint of the local Ollama server, honoring OLLAMA_HOST like the Ollama CLI does.
@@ -644,6 +729,66 @@ mod tests {
         command_with(&profile, "task", false, permission, false, &env, &which)
             .unwrap()
             .0
+    }
+
+    #[test]
+    fn effort_reaches_qwen_code_through_a_system_settings_file() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".qwen")).unwrap();
+        std::fs::write(
+            home.path().join(".qwen/settings.json"),
+            json!({"modelProviders": {"openai": [
+                {"id": "qwen3.6", "baseUrl": "http://localhost:11434/v1", "generationConfig": {"timeout": 600000}},
+                {"id": "other", "baseUrl": "http://localhost:11434/v1"},
+            ]}})
+            .to_string(),
+        )
+        .unwrap();
+        let env: HashMap<String, String> = [(
+            "HOME".to_string(),
+            home.path().to_string_lossy().into_owned(),
+        )]
+        .into();
+        let which = |_: &str| Some("/bin/agent".to_string());
+        let profile = json!({"engine": "ollama", "model": "qwen3.6", "effort": "off"});
+        let (_, env_out) =
+            command_with(&profile, "task", false, None, false, &env, &which).unwrap();
+        let path = &env_out["QWEN_CODE_SYSTEM_SETTINGS_PATH"];
+        let settings: Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(
+            settings["model"]["generationConfig"]["extra_body"]["reasoning_effort"],
+            "none"
+        );
+        let entries = settings["modelProviders"]["openai"].as_array().unwrap();
+        assert_eq!(entries[0]["generationConfig"]["timeout"], 600000); // The user's own entry, kept.
+        assert_eq!(
+            entries[0]["generationConfig"]["extra_body"]["reasoning_effort"],
+            "none"
+        );
+        assert!(entries[1].get("generationConfig").is_none()); // Other models untouched.
+        let none = json!({"engine": "ollama", "model": "qwen3.6"});
+        let (_, env_out) = command_with(&none, "task", false, None, false, &env, &which).unwrap();
+        assert!(!env_out.contains_key("QWEN_CODE_SYSTEM_SETTINGS_PATH"));
+    }
+
+    #[test]
+    fn harness_runs_the_worker_in_the_chosen_cli() {
+        let env: HashMap<String, String> = HashMap::new();
+        let which = |_: &str| Some("/bin/agent".to_string());
+        let local = json!({"engine": "ollama", "model": "qwen3.6", "harness": "claude"});
+        let (args, env_out) =
+            command_with(&local, "task", false, None, false, &env, &which).unwrap();
+        assert!(args.contains(&"--print".to_string()), "{args:?}"); // Claude Code's batch mode.
+        assert_eq!(after(&args, "--model"), "qwen3.6");
+        assert_eq!(env_out["ANTHROPIC_AUTH_TOKEN"], "ollama");
+        let local = json!({"engine": "ollama", "model": "qwen3.6", "harness": "codex"});
+        let (args, _) = command_with(&local, "task", false, None, false, &env, &which).unwrap();
+        assert!(args.contains(&"exec".to_string()), "{args:?}");
+        assert!(
+            args.contains(&"model_provider=\"donut\"".to_string()),
+            "{args:?}"
+        );
     }
 
     fn after<'a>(args: &'a [String], flag: &str) -> &'a str {

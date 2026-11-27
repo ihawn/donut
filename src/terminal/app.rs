@@ -40,6 +40,8 @@ pub struct AppOptions {
     pub auto_refresh_quotas: bool,
     /// Ask simple or complex the first time Donut opens.
     pub ask_interface: bool,
+    /// Install Ponytail for each Claude and Codex login that lacks it; tests turn this off.
+    pub install_ponytail: bool,
     /// plan, work, review or solo: the mode Donut opens in.
     pub start_mode: String,
 }
@@ -49,6 +51,7 @@ impl Default for AppOptions {
         AppOptions {
             auto_refresh_quotas: true,
             ask_interface: true,
+            install_ponytail: true,
             start_mode: "solo".into(),
         }
     }
@@ -60,6 +63,7 @@ impl AppOptions {
         AppOptions {
             auto_refresh_quotas: false,
             ask_interface: false,
+            install_ponytail: false,
             start_mode: "plan".into(),
         }
     }
@@ -185,6 +189,8 @@ pub struct State {
     pub history: Vec<String>,
     pub history_at: Option<usize>,
     pub history_stash: String,
+    /// Pasted or dropped image paths; the draft shows image N as `[screenshotN]` (render::image_label).
+    pub images: Vec<String>,
     pub recalled: bool,
     pub steps: Option<Vec<routing::Step>>,
     pub interface: String,
@@ -204,6 +210,8 @@ pub struct State {
     pub turn_tools: Vec<String>,
     pub last_answer: String,
     pub picking: Option<Sender<Option<Value>>>,
+    /// While a model's question waits for a typed answer, Enter sends the prompt here, not to the model.
+    pub typing: Option<Sender<Option<String>>>,
     pub background_tasks: Vec<BackgroundTask>,
     pub threads: HashMap<String, u64>,
     pub waiting_resume: Vec<(String, Value)>,
@@ -279,6 +287,12 @@ pub fn text_of<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
         .get(key)
         .and_then(Value::as_str)
         .filter(|text| !text.is_empty())
+}
+
+/// Ponytail works out of sight: its own commands stay out of the / menu, and /ponytail-options holds them.
+/// Typed in full they still reach the model.
+fn hidden_command(name: &str) -> bool {
+    name.starts_with("/ponytail")
 }
 
 pub fn engine_of(profile: &Value) -> Option<&str> {
@@ -378,6 +392,25 @@ impl State {
             selected.insert("work".into(), Some(routing::AUTO.into()));
             profiles.insert("work".into(), ladder[0].clone());
         }
+        // The orchestrator follows the planner until /orchestrator picks its own model.
+        let orchestrator = if alias.is_some() {
+            None
+        } else {
+            role_choice(&config, "orch")
+        };
+        match orchestrator {
+            Some((name, profile)) => {
+                selected.insert("orch".into(), Some(name));
+                profiles.insert("orch".into(), profile);
+            }
+            None => {
+                selected.insert("orch".into(), selected.get("plan").cloned().flatten());
+                profiles.insert(
+                    "orch".into(),
+                    profiles.get("plan").cloned().unwrap_or_else(|| json!({})),
+                );
+            }
+        }
         // No default soloist: the first solo message asks. donut -m ALIAS makes ALIAS the soloist too.
         let soloist = match alias {
             Some(alias) => Some((alias.to_string(), aliases[alias].clone())),
@@ -454,6 +487,7 @@ impl State {
             history: Vec::new(),
             history_at: None,
             history_stash: String::new(),
+            images: Vec::new(),
             recalled: false,
             steps: None,
             interface,
@@ -470,6 +504,7 @@ impl State {
             turn_tools: Vec::new(),
             last_answer: String::new(),
             picking: None,
+            typing: None,
             background_tasks: Vec::new(),
             threads: HashMap::new(),
             waiting_resume: Vec::new(),
@@ -521,10 +556,27 @@ impl State {
     }
 
     pub fn prof(&self, role: &str) -> Value {
-        self.profiles
+        let mut profile = self
+            .profiles
             .get(role)
             .cloned()
-            .unwrap_or_else(|| json!({}))
+            .unwrap_or_else(|| json!({}));
+        if let Some(harness) = self.harness_of(role)
+            && profile.as_object().is_some_and(|o| !o.is_empty())
+        {
+            profile["harness"] = json!(harness);
+        }
+        profile
+    }
+
+    /// The harness /harness saved for a role (config `harness.<role>`), if it is not the model's own.
+    pub fn harness_of(&self, role: &str) -> Option<String> {
+        self.config
+            .get("harness")
+            .and_then(|harness| harness.get(role))
+            .and_then(Value::as_str)
+            .filter(|h| !h.is_empty() && *h != "auto")
+            .map(str::to_string)
     }
 
     pub fn role(&self) -> String {
@@ -533,7 +585,7 @@ impl State {
 
     /// Solo and review keep conversations of their own, apart from the planner's, even on the same model.
     pub fn purpose(&self) -> Option<String> {
-        matches!(self.mode.as_str(), "solo" | "review").then(|| self.mode.clone())
+        matches!(self.mode.as_str(), "solo" | "review" | "orch").then(|| self.mode.clone())
     }
 
     pub fn lanes(&self) -> PathBuf {
@@ -557,10 +609,13 @@ impl State {
     }
 
     pub fn session_key(alias: &str, profile: &Value, purpose: Option<&str>) -> SessionKey {
-        let name = match purpose {
+        let mut name = match purpose {
             Some(purpose) => format!("{alias}@{purpose}"),
             None => alias.to_string(),
         };
+        if let Some(harness) = crate::harness::chosen(profile) {
+            name.push_str(&format!(" in {harness}")); // Another harness is another session.
+        }
         (name, text_of(profile, "model").map(str::to_string))
     }
 
@@ -691,10 +746,10 @@ impl State {
                 Some(GRAY),
             );
             vec![
+                ("/solo", "direct"),
+                ("/review", "check"),
                 ("/plan", "tickets"),
                 ("/work", "build"),
-                ("/review", "check"),
-                ("/solo", "direct"),
                 ("/", "commands"),
                 ("!", "shell"),
                 ("Shift+Enter", "newline"),
@@ -1076,7 +1131,7 @@ impl State {
                 );
             }
         }
-        for role in ["plan", "work", "review", "solo"] {
+        for role in ["solo", "review", "plan", "work", "orch"] {
             // Models picked by hand may not be saved aliases.
             let profile = self.prof(role);
             let alias = self.sel(role);
@@ -1165,7 +1220,8 @@ impl State {
         let profile = self.prof(&self.role());
         if is_empty_profile(&profile)
             || self.focus_view
-            || self.config.get("ponytail_band") == Some(&Value::Bool(false))
+            // Ponytail runs out of sight: its band shows only after /ponytail-options turns it on.
+            || self.config.get("ponytail_band") != Some(&Value::Bool(true))
             || !self.has_ponytail(&profile)
         {
             return None;
@@ -1984,7 +2040,7 @@ impl State {
             };
             if let Some(name) = name {
                 let full = format!("/{}", name.trim_start_matches('/'));
-                if !rows.iter().any(|row| row.label == full) {
+                if !hidden_command(&full) && !rows.iter().any(|row| row.label == full) {
                     let description = command
                         .get("description")
                         .and_then(Value::as_str)
@@ -1996,9 +2052,9 @@ impl State {
                 }
             }
         }
-        // Installed plugins and skills (Ponytail's /ponytail-review, ...), listed before any session is open.
+        // Installed plugins and skills, listed before any session is open.
         for command in plugin_commands {
-            if !rows.iter().any(|row| row.label == command.name) {
+            if !hidden_command(&command.name) && !rows.iter().any(|row| row.label == command.name) {
                 rows.push(
                     MenuRow::new(command.name.clone(), json!(command.name))
                         .described(&command.description.chars().take(80).collect::<String>()),

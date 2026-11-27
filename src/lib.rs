@@ -7,6 +7,7 @@ pub mod config;
 pub mod conversations;
 pub mod effort;
 pub mod handholding;
+pub mod harness;
 pub mod highlight;
 pub mod install_skills;
 pub mod legacy;

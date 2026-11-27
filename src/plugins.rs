@@ -306,6 +306,66 @@ pub fn commands(profile: &Value, project: Option<&Path>) -> Vec<Command> {
     unique
 }
 
+/// Where Donut installs Ponytail from, for Claude Code and Codex alike.
+pub const PONYTAIL_MARKETPLACE: &str = "DietrichGebert/ponytail";
+
+/// Whether this login has Ponytail at all, enabled or not. A plugin the user turned off stays off.
+pub fn has_ponytail_files(profile: &Value) -> bool {
+    match profile.get("engine").and_then(Value::as_str) {
+        Some("claude") => {
+            let installed = read_json(
+                &claude_dir(profile)
+                    .join("plugins")
+                    .join("installed_plugins.json"),
+            );
+            let entries = installed.get("plugins").unwrap_or(&installed);
+            entries.as_object().is_some_and(|map| {
+                map.keys()
+                    .any(|key| key.split('@').next() == Some("ponytail"))
+            })
+        }
+        Some("codex") => codex_plugins().iter().any(|(name, _)| name == "ponytail"),
+        _ => false,
+    }
+}
+
+/// Install Ponytail for a Claude or Codex login that does not have it, with the provider's own plugin
+/// commands. Ponytail then runs at its own default level. Ok(true) when this call installed it.
+pub fn ensure_ponytail(profile: &Value) -> anyhow::Result<bool> {
+    let engine = profile.get("engine").and_then(Value::as_str).unwrap_or("");
+    if !matches!(engine, "claude" | "codex") || has_ponytail_files(profile) {
+        return Ok(false);
+    }
+    let run = |args: &[&str]| -> anyhow::Result<()> {
+        let mut command =
+            std::process::Command::new(which::which(engine).unwrap_or_else(|_| engine.into()));
+        command
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
+        if engine == "claude"
+            && let Some(dir) = profile
+                .get("claude_config_dir")
+                .and_then(Value::as_str)
+                .filter(|d| !d.is_empty())
+        {
+            command.env("CLAUDE_CONFIG_DIR", expanduser(dir));
+        }
+        let output = command.output()?;
+        if !output.status.success() {
+            let error = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("{}", error.trim().lines().last().unwrap_or("failed"));
+        }
+        Ok(())
+    };
+    // The marketplace may be there already; the install says whether it worked.
+    let _ = run(&["plugin", "marketplace", "add", PONYTAIL_MARKETPLACE]);
+    let install = if engine == "claude" { "install" } else { "add" };
+    run(&["plugin", install, "ponytail@ponytail"])?;
+    Ok(has_ponytail_files(profile))
+}
+
 pub fn installed(profile: &Value, plugin: &str, project: Option<&Path>) -> bool {
     match profile.get("engine").and_then(Value::as_str) {
         Some("claude") => claude_plugins(profile, project)
@@ -419,6 +479,17 @@ mod tests {
         let profile = json!({"engine": "claude"});
         assert!(commands(&profile, None).is_empty());
         assert!(!installed(&profile, "ponytail", None));
+    }
+
+    #[test]
+    fn test_ensure_ponytail_leaves_a_turned_off_plugin_and_other_engines_alone() {
+        let env = Env::new();
+        install_claude_ponytail(&env.path().join("claude"), false);
+        let profile = json!({"engine": "claude"});
+        assert!(has_ponytail_files(&profile)); // Installed, though off: Donut does not install it again.
+        assert!(!ensure_ponytail(&profile).unwrap());
+        assert!(!installed(&profile, "ponytail", None)); // Still off.
+        assert!(!ensure_ponytail(&json!({"engine": "ollama", "model": "qwen3.6"})).unwrap());
     }
 
     #[test]

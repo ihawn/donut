@@ -886,9 +886,12 @@ fn test_dropped_paste_inserts_quoted_path() {
     std::fs::write(&shot, b"x").unwrap();
     let shot = shot.to_string_lossy().into_owned();
     app.handle_paste(&format!("\"{shot}\"")); // The quoted form every platform pastes.
+    assert_eq!(draft_text(&app), "[screenshot1] ");
+    app.handle_paste(&shot); // The same image again keeps its number.
+    assert_eq!(draft_text(&app), "[screenshot1] [screenshot1] ");
     assert_eq!(
-        draft_text(&app),
-        format!("{} ", super::render::quote_path(&shot))
+        super::render::expand_images("look [screenshot1]", &app.st().images),
+        format!("look {}", super::render::quote_path(&shot))
     );
     app.st().draft.load_text("");
     app.handle_paste("hello world");
@@ -912,8 +915,8 @@ fn test_pasted_image_paste_inserts_saved_path() {
     bytes.extend(vec![b'0'; 200]);
     let png = base64::engine::general_purpose::STANDARD.encode(&bytes);
     app.handle_paste(&png);
-    let words = shlex::split(&draft_text(&app)).unwrap();
-    let path = &words[0];
+    assert_eq!(draft_text(&app), "[screenshot1] ");
+    let path = &app.st().images[0].clone();
     assert!(path.ends_with(".png"));
     assert!(
         std::fs::read(path)
@@ -939,7 +942,7 @@ fn test_typing_slash_filters_inline_and_enter_runs_the_top_match() {
     let sent = recorded(&app);
     press(&app, &["/"]);
     assert!(menu_open(&app));
-    assert_eq!(app.st().menu.visible_rows[0].label, "/plan");
+    assert_eq!(app.st().menu.visible_rows[0].label, "/solo");
     press(&app, &["m", "o"]);
     assert_eq!(labels(&app), ["/model"]);
     assert_eq!(app.st().menu.highlighted(), Some(0));
@@ -3507,4 +3510,305 @@ fn test_qwen_still_points_to_native_for_raw_controls() {
     let (app, _) = setup(&env, config);
     send(&app, "/mcp");
     assert!(body(&app).contains("Use /native for Qwen plugins, MCP and context controls."));
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Model questions (Claude's AskUserQuestion, Codex's request_user_input)
+
+fn spawn_questions(
+    app: &App,
+    questions: Vec<crate::sessions::Question>,
+) -> std::sync::mpsc::Receiver<Option<crate::sessions::Answers>> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let _ = sender.send(app.answer_questions(&questions));
+    });
+    receiver
+}
+
+fn question(id: &str, options: &[&str], multi: bool) -> crate::sessions::Question {
+    crate::sessions::Question {
+        id: id.into(),
+        header: "Color".into(),
+        question: "Which color do you like?".into(),
+        options: options
+            .iter()
+            .map(|o| (o.to_string(), String::new()))
+            .collect(),
+        multi,
+        other: true,
+        secret: false,
+    }
+}
+
+#[test]
+fn test_questions_pick_an_option_toggle_several_or_type_something_else() {
+    let env = env();
+    let (app, _) = setup(&env, claude_config());
+    let sent = recorded(&app);
+    // One option, by number.
+    let answer = spawn_questions(&app, vec![question("color", &["Red", "Blue"], false)]);
+    wait("menu open", || menu_open(&app));
+    assert_eq!(app.st().menu.title, "Color");
+    assert_eq!(
+        labels(&app),
+        ["Red", "Blue", "Something else (type your answer)"]
+    );
+    let details = plain_lines(&app.st().menu.details.clone());
+    assert_eq!(details, "Which color do you like?"); // The question, not a JSON dump.
+    press(&app, &["2"]);
+    assert_eq!(
+        answer.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Some(vec![("color".to_string(), vec!["Blue".to_string()])])
+    );
+    // Something else: the typed prompt answers it, and does not go to the model or the history.
+    let answer = spawn_questions(&app, vec![question("color", &["Red", "Blue"], false)]);
+    wait("menu open", || menu_open(&app));
+    press(&app, &["3"]);
+    wait("typing", || app.st().typing.is_some());
+    app.st().draft.load_text("Green");
+    press(&app, &["enter"]);
+    assert_eq!(
+        answer.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Some(vec![("color".to_string(), vec!["Green".to_string()])])
+    );
+    assert!(sent.lock().unwrap().is_empty());
+    assert!(!app.st().history.contains(&"Green".to_string()));
+    // Multi-select: toggle two, untoggle one, then Done.
+    let answer = spawn_questions(
+        &app,
+        vec![question("colors", &["Red", "Blue", "Gold"], true)],
+    );
+    let marks = |expected: [&str; 3]| {
+        wait("rows", || {
+            labels(&app).get(..3) == Some(&expected.map(String::from)[..])
+        })
+    };
+    marks(["[ ] Red", "[ ] Blue", "[ ] Gold"]);
+    press(&app, &["1"]);
+    marks(["[x] Red", "[ ] Blue", "[ ] Gold"]);
+    press(&app, &["3"]);
+    marks(["[x] Red", "[ ] Blue", "[x] Gold"]);
+    press(&app, &["1"]);
+    marks(["[ ] Red", "[ ] Blue", "[x] Gold"]);
+    press(&app, &["5"]); // Done, after the three options and Something else.
+    assert_eq!(
+        answer.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Some(vec![("colors".to_string(), vec!["Gold".to_string()])])
+    );
+    // Esc dismisses; Ctrl+C cancels a typed answer.
+    let answer = spawn_questions(&app, vec![question("color", &["Red"], false)]);
+    wait("menu open", || menu_open(&app));
+    press(&app, &["escape"]);
+    assert_eq!(answer.recv_timeout(Duration::from_secs(5)).unwrap(), None);
+    let answer = spawn_questions(&app, vec![question("name", &[], false)]);
+    wait("typing", || app.st().typing.is_some());
+    app.action_cancel();
+    assert_eq!(answer.recv_timeout(Duration::from_secs(5)).unwrap(), None);
+    assert!(app.st().typing.is_none());
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// /harness
+
+#[test]
+fn test_harness_runs_a_local_model_in_claude_code_and_is_saved_per_mode() {
+    let env = env();
+    let config =
+        json!({"aliases": {"local": {"engine": "ollama", "model": "qwen3.6"}}, "planner": "local"});
+    let (app, fakes) = setup(&env, config);
+    let role = app.st().role();
+    send(&app, "/harness claude");
+    assert_eq!(load_config()["harness"][&role], "claude"); // Saved for the next window.
+    assert_eq!(app.st().prof(&role)["harness"], "claude");
+    send(&app, "hello");
+    let made = fakes.made.lock().unwrap().last().cloned().unwrap();
+    let profile = made.profile.lock().unwrap().clone();
+    assert_eq!(made.family, "claude"); // Claude Code's session, not Donut's own loop for Ollama.
+    assert_eq!(
+        (
+            profile["engine"].as_str(),
+            profile["model_engine"].as_str(),
+            profile["model"].as_str()
+        ),
+        (Some("claude"), Some("ollama"), Some("qwen3.6"))
+    );
+    assert_eq!(profile["env"]["ANTHROPIC_AUTH_TOKEN"], "ollama");
+    send(&app, "/harness sideways");
+    assert_eq!(load_config()["harness"][&role], "claude"); // An unknown harness changes nothing.
+    send(&app, "/harness auto");
+    assert!(load_config()["harness"].get(&role).is_none());
+    assert!(app.st().prof(&role).get("harness").is_none());
+}
+
+#[test]
+fn test_harness_refuses_a_cross_vendor_run_without_a_gateway() {
+    let env = env();
+    let config =
+        json!({"aliases": {"gpt": {"engine": "codex", "model": "gpt-6.2"}}, "planner": "gpt"});
+    let (app, _) = setup(&env, config);
+    send(&app, "/harness claude");
+    assert!(body(&app).contains("gateway_url"), "{}", body(&app));
+    assert!(load_config().get("harness").is_none()); // Not saved.
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Ponytail out of sight, and /ponytail-options
+
+/// A Claude login with Ponytail installed and enabled, in a config dir of its own.
+fn ponytail_config(env: &Env) -> Value {
+    let claude = env.temp.path().join("claude-ponytail");
+    let plugin = claude.join("plugins/cache/ponytail/ponytail/5.3.3");
+    for (path, text) in [
+        (plugin.join("skills/ponytail/SKILL.md"), "---\nname: ponytail\ndescription: Lazy senior dev mode.\n---\n".to_string()),
+        (plugin.join("skills/ponytail-review/SKILL.md"), "---\nname: ponytail-review\ndescription: Review a change.\n---\n".to_string()),
+        (
+            claude.join("plugins/installed_plugins.json"),
+            json!({"version": 2, "plugins": {"ponytail@ponytail": [{"scope": "user", "installPath": plugin}]}}).to_string(),
+        ),
+        (claude.join("settings.json"), json!({"enabledPlugins": {"ponytail@ponytail": true}}).to_string()),
+        (claude.join(".ponytail-active"), "full".to_string()),
+    ] {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    json!({"aliases": {"claude": {"engine": "claude", "model": "claude-opus-5-5", "claude_config_dir": claude}}, "planner": "claude"})
+}
+
+#[test]
+fn test_ponytail_runs_out_of_sight_and_ponytail_options_holds_its_menu() {
+    let env = env();
+    let (app, _) = setup(&env, ponytail_config(&env));
+    let profile = app.st().prof("plan");
+    assert!(app.st().has_ponytail(&profile));
+    assert!(app.st().band_line().is_none()); // Installed, but no band by default.
+    let names: Vec<String> = app.slash_rows().into_iter().map(|row| row.label).collect();
+    assert!(
+        names.contains(&"/ponytail-options".to_string()),
+        "{names:?}"
+    );
+    assert!(
+        !names
+            .iter()
+            .any(|name| name.starts_with("/ponytail") && name != "/ponytail-options"),
+        "{names:?}"
+    );
+    // The menu: the four levels with the live one marked, Ponytail's commands, and the band switch.
+    let (sender, done) = std::sync::mpsc::channel();
+    {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(app.command("/ponytail-options").is_ok());
+        });
+    }
+    wait("menu open", || menu_open(&app));
+    assert_eq!(app.st().menu.title, "Ponytail · now full");
+    assert_eq!(
+        labels(&app),
+        [
+            "Lite",
+            "Full (default) · now",
+            "Ultra",
+            "Off",
+            "/ponytail-review",
+            "Show the band"
+        ]
+    );
+    assert_eq!(values(&app)[0], json!("/ponytail lite"));
+    press(&app, &["down", "down", "down", "down", "down"]);
+    assert_eq!(
+        app.st()
+            .menu
+            .current()
+            .map(|row| row.label.clone())
+            .as_deref(),
+        Some("Show the band")
+    );
+    press(&app, &["enter"]);
+    assert!(done.recv_timeout(Duration::from_secs(5)).unwrap());
+    assert_eq!(load_config()["ponytail_band"], json!(true));
+    assert!(app.st().band_line().is_some());
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Orchestrate mode
+
+#[test]
+fn test_orchestrator_workers_line_is_read_from_the_reply() {
+    use super::render::orchestrator_workers;
+    assert_eq!(
+        orchestrator_workers("Two tickets.\n\nDONUT-WORKERS: 3"),
+        Some(3)
+    );
+    assert_eq!(orchestrator_workers("`DONUT-WORKERS: 2`"), Some(2));
+    assert_eq!(orchestrator_workers("No tickets this time."), None);
+}
+
+#[test]
+fn test_orchestrate_runs_rounds_of_workers_and_hands_results_back() {
+    let env = env();
+    let (app, fakes) = setup(&env, claude_config());
+    send(&app, "/orchestrate");
+    assert_eq!(app.st().mode, "orch");
+    assert!(
+        status_text(&app).contains("orchestrator"),
+        "{}",
+        status_text(&app)
+    );
+    send(&app, "hello"); // Opens the orchestrator's session; no tickets, so no workers.
+    let orchestrator = fakes.first();
+    assert_eq!(orchestrator.purpose.as_deref(), Some("orch"));
+    let lanes = workspace::lanes_dir(&env.project(), Some(&app.orchestrator_session()));
+    let replies: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![
+        "The wall jump works: both tickets are done.".to_string(),
+        "Two parts, in parallel.\n\nDONUT-WORKERS: 3".to_string(),
+    ]));
+    let (sink, to_do) = (Arc::clone(&replies), lanes.join("to_do"));
+    orchestrator.set_hook(move |fake, _| {
+        let reply = sink.lock().unwrap().pop().unwrap();
+        if reply.contains("DONUT-WORKERS") {
+            std::fs::create_dir_all(&to_do).unwrap();
+            std::fs::write(to_do.join("001_wall-jump.md"), "# Wall jump\n").unwrap();
+            std::fs::write(to_do.join("002_wall-slide.md"), "# Wall slide\n").unwrap();
+        }
+        (fake.emit)("text", json!(reply));
+    });
+    let seen: Arc<Mutex<Vec<Vec<String>>>> = Arc::default();
+    let (runs, root) = (Arc::clone(&seen), lanes.clone());
+    app.set_runner(Arc::new(move |spec| {
+        runs.lock().unwrap().push(spec.args.clone());
+        let done = root.join("done");
+        std::fs::create_dir_all(&done).unwrap();
+        for name in ["001_wall-jump.md", "002_wall-slide.md"] {
+            std::fs::rename(root.join("to_do").join(name), done.join(name)).unwrap();
+        }
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg("echo '[1/2] 001_wall-jump.md — fresh context'")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+    }));
+    send(&app, "add a wall jump");
+    let args = seen.lock().unwrap()[0].clone();
+    let after = |flag: &str| args[args.iter().position(|a| a == flag).unwrap() + 1].clone();
+    assert_eq!(after("--session"), app.orchestrator_session()); // Its own tickets, never /work's.
+    assert_eq!(after("--parallel"), "3"); // As many workers as the orchestrator asked for.
+    assert!(args.contains(&"--no-pr".to_string()));
+    let calls = orchestrator.calls();
+    let first = &calls[calls.len() - 2];
+    assert!(first.contains("DONUT-WORKERS: N"), "{first}");
+    assert!(first.contains("Ticket scope is somewhat broad"), "{first}"); // /handholding medium.
+    let second = calls.last().unwrap();
+    assert!(
+        second.contains("Round 1 of the workers finished"),
+        "{second}"
+    );
+    assert!(second.contains("done/001_wall-jump.md"), "{second}");
+    let text = body(&app);
+    assert!(text.contains("Round 1 · 2 tickets · 3 workers"), "{text}");
+    assert!(text.contains("001_wall-jump.md — fresh context"), "{text}"); // The workers run in view.
+    assert!(text.contains("The wall jump works"), "{text}");
+    assert_eq!(seen.lock().unwrap().len(), 1); // The last reply wrote no tickets: no second round.
 }

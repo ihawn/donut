@@ -13,7 +13,7 @@ use super::app::{
 };
 use super::flows::{App, SessionRequest};
 use super::render::{
-    self, COMPLEX_COMMANDS, DIM, GRAY, NEEDS_MODEL, ORANGE, TEAL, VERBOSITY, model_name,
+    self, COMPLEX_COMMANDS, CORAL, DIM, GRAY, NEEDS_MODEL, ORANGE, TEAL, VERBOSITY, model_name,
 };
 use super::widgets::MenuRow;
 use crate::providers::PERMISSION_MODES;
@@ -22,8 +22,8 @@ use crate::summaries::{
 };
 use crate::{handholding, plugins, tickets};
 
-const HELP_SIMPLE: &str = "/harder (a stronger model for this conversation) · /routing · /model · /resume · /clear (or /new) · /permissions [ask|accept_edits|auto|full] · /auto · /effort · /verbosity [quiet|normal|verbose|full] · /chrome [on|off] · /usage · /plugin · /mcp · /context · /copy · /project [PATH] · /rename · /login · /native · /complex (show every feature) · /exit\nDonut rates your first message in a conversation and picks the model for it; the model stays until /clear. !COMMAND runs a shell command in the project. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued.";
-const HELP_COMPLEX: &str = "/plan · /work [next COUNT] [parallel N] [checkpoint] · /review · /solo · /resume · /session [NAME|new] · /next [COUNT] · /prev [COUNT] · /project [PATH] · /planner · /worker · /reviewer [ALIAS|planner|off] · /soloist · /handholding [low|medium|high] · /model · /permissions [ask|accept_edits|auto|full] · /auto · /verbosity [quiet|normal|verbose|full] · /chrome [on|off] · /usage · /plugin · /mcp · /context · /clear (or /new) · /ponytail band · /copy · /login · /native · /harder · /routing · /simple · /exit\n!COMMAND runs a shell command in the project; the model sees its output with your next message. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Installed plugin and skill commands (such as Ponytail's) are listed under / and forwarded to the selected session in its own syntax. Use /native for built-ins requiring the provider’s own UI.";
+const HELP_SIMPLE: &str = "/harder (a stronger model for this conversation) · /routing · /model · /resume · /clear (or /new) · /permissions [ask|accept_edits|auto|full] · /auto · /effort · /verbosity [quiet|normal|verbose|full] · /chrome [on|off] · /harness [auto|claude|codex] · /usage · /plugin · /mcp · /context · /copy · /project [PATH] · /rename · /login · /native · /complex (show every feature) · /exit\nDonut rates your first message in a conversation and picks the model for it; the model stays until /clear. !COMMAND runs a shell command in the project. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued.";
+const HELP_COMPLEX: &str = "/solo · /review · /plan · /work [next COUNT] [parallel N] [checkpoint] · /resume · /session [NAME|new] · /next [COUNT] · /prev [COUNT] · /project [PATH] · /soloist · /reviewer [ALIAS|planner|off] · /planner · /worker · /orchestrate · /orchestrator · /handholding [low|medium|high] · /model · /permissions [ask|accept_edits|auto|full] · /auto · /verbosity [quiet|normal|verbose|full] · /chrome [on|off] · /harness [auto|claude|codex] · /usage · /plugin · /mcp · /context · /clear (or /new) · /ponytail-options · /copy · /login · /native · /harder · /routing · /simple · /exit\n!COMMAND runs a shell command in the project; the model sees its output with your next message. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Installed plugin and skill commands are listed under / and forwarded to the selected session in its own syntax. Use /native for built-ins requiring the provider’s own UI.";
 
 fn is_count(text: &str) -> bool {
     !text.is_empty()
@@ -67,10 +67,11 @@ impl App {
             "/simple" | "/complex" => self.set_interface(&name[1..]),
             "/harder" => self.harder(),
             "/routing" => self.show_routing(),
-            "/planner" | "/worker" | "/soloist" => {
+            "/planner" | "/worker" | "/soloist" | "/orchestrator" => {
                 let role = match name {
                     "/planner" => "plan",
                     "/worker" => "work",
+                    "/orchestrator" => "orch",
                     _ => "solo",
                 };
                 self.choose_model(role, args.first().copied())?;
@@ -105,6 +106,24 @@ impl App {
                     span(format!(" · {who}"), bold(ORANGE)),
                 ]));
                 s.say("  Ask the reviewer to check code or changes. It reads the project and never edits it.", Some(DIM));
+            }
+            "/orchestrate" => {
+                if !self.ensure_role("orch")? || !self.ensure_role("work")? {
+                    return Ok(());
+                }
+                let mut s = self.st();
+                s.set_mode("orch");
+                let who = model_name(&s.prof("orch"), s.sel("orch").as_deref());
+                let workers = model_name(&s.prof("work"), s.sel("work").as_deref());
+                s.say_line(Line::from(vec![
+                    span("  Orchestrate mode", bold(CORAL)),
+                    span(format!(" · {who} · workers {workers}"), bold(ORANGE)),
+                ]));
+                s.say(
+                    "  Say what to get done. The orchestrator plans as it goes, runs as many workers as it needs \
+                     on tickets scoped by /handholding, checks their work and sends more until it is done.",
+                    Some(DIM),
+                );
             }
             "/plan" => {
                 if !self.ensure_role("plan")? {
@@ -254,6 +273,40 @@ impl App {
                     self.set_verbosity(if on { "quiet" } else { "normal" });
                 }
             }
+            "/harness" => {
+                let role = self.st().role();
+                let chosen: Option<String> = match args.first() {
+                    Some(harness) if crate::harness::HARNESSES.contains(harness) => {
+                        Some((*harness).to_string())
+                    }
+                    Some(_) => {
+                        self.say_dim("  Use /harness [auto|claude|codex].");
+                        None
+                    }
+                    None => {
+                        let rows = vec![
+                            MenuRow::new("Auto", json!("auto"))
+                                .described("Each model runs in its own provider's harness"),
+                            MenuRow::new("Claude Code", json!("claude")).described(
+                                "Any model in Claude Code: local Ollama as is, others through gateway_url",
+                            ),
+                            MenuRow::new("Codex", json!("codex")).described(
+                                "Any model in Codex: local Ollama and OpenAI-compatible endpoints as is, others through gateway_url",
+                            ),
+                        ];
+                        let now = self.st().harness_of(&role).unwrap_or_else(|| "auto".into());
+                        self.pick_with(
+                            &format!("Harness for the {} · now {now}", render::role_title(&role)),
+                            rows,
+                            "The agent loop that drives the model; the model stays the same",
+                        )
+                        .and_then(|v| v.as_str().map(str::to_string))
+                    }
+                };
+                if let Some(chosen) = chosen {
+                    self.set_harness(&role, &chosen);
+                }
+            }
             "/chrome" => {
                 if let Some(first) = args.first()
                     && !matches!(*first, "on" | "off")
@@ -346,13 +399,14 @@ impl App {
             }
             "/usage" => self.usage(),
             "/clear" | "/new" => self.start_fresh(),
+            "/ponytail-options" => self.ponytail_options(&role)?,
             "/ponytail" if args.first() == Some(&"band") => {
                 // Ponytail's band is a Claude Code UI module; in Donut the same switch shows or hides Donut's band.
                 if args.get(1) == Some(&"import") {
                     self.say_dim("  /ponytail band import reads Claude Code's own session files; run it there (/native).");
                     return Ok(());
                 }
-                let hidden = self.st().config.get("ponytail_band") == Some(&Value::Bool(false));
+                let hidden = self.st().config.get("ponytail_band") != Some(&Value::Bool(true));
                 let shown = match args.get(1).copied() {
                     Some("on") => true,
                     Some("off") => false,
@@ -367,7 +421,7 @@ impl App {
                 s.config["ponytail_band"] = json!(shown);
                 s.say(
                     &format!(
-                        "  Ponytail band {}. /ponytail band switches it back.",
+                        "  Ponytail band {}. /ponytail-options switches it back.",
                         if shown { "shown" } else { "hidden" }
                     ),
                     Some(DIM),
@@ -399,6 +453,83 @@ impl App {
     }
 
     /// A command the provider session itself answers, sent in its own syntax.
+    /// Ponytail's settings and commands in one menu, since Donut keeps Ponytail out of sight otherwise.
+    fn ponytail_options(&self, role: &str) -> Result<()> {
+        let (profile, project) = {
+            let s = self.st();
+            (s.prof(role), s.project.clone())
+        };
+        let profile = crate::harness::effective(&profile).unwrap_or(profile);
+        if !self.st().has_ponytail(&profile) {
+            self.say_dim("  Ponytail is not installed for this mode's model. It runs in Claude Code and Codex; Donut installs it there when it starts.");
+            return Ok(());
+        }
+        let now = crate::ponytail::level(&profile, &project);
+        let mut rows = Vec::new();
+        for (level, label, description) in [
+            (
+                "lite",
+                "Lite",
+                "Light touch: keep it simple, little pushback",
+            ),
+            (
+                "full",
+                "Full (default)",
+                "Ponytail's default: build the minimum that works",
+            ),
+            (
+                "ultra",
+                "Ultra",
+                "Strictest: question whether the code needs to exist at all",
+            ),
+            ("off", "Off", "Ponytail stays installed but adds nothing"),
+        ] {
+            let mark = if level == now { " · now" } else { "" };
+            rows.push(
+                MenuRow::new(
+                    format!("{label}{mark}"),
+                    json!(format!("/ponytail {level}")),
+                )
+                .described(description),
+            );
+        }
+        for command in plugins::commands(&profile, Some(&project)) {
+            if command.name.starts_with("/ponytail-") {
+                let description: String = command.description.chars().take(80).collect();
+                rows.push(
+                    MenuRow::new(command.name.clone(), json!(command.name)).described(&description),
+                );
+            }
+        }
+        let shown = self.st().config.get("ponytail_band") == Some(&Value::Bool(true));
+        rows.push(
+            MenuRow::new(
+                if shown {
+                    "Hide the band"
+                } else {
+                    "Show the band"
+                },
+                json!(if shown {
+                    "/ponytail band off"
+                } else {
+                    "/ponytail band on"
+                }),
+            )
+            .described("Ponytail's line of task numbers above the prompt"),
+        );
+        let Some(choice) = self
+            .pick_with(
+                &format!("Ponytail · now {now}"),
+                rows,
+                "Level, commands and band",
+            )
+            .and_then(|v| v.as_str().map(str::to_string))
+        else {
+            return Ok(());
+        };
+        self.command(&choice)
+    }
+
     fn forward(&self, text: &str, name: &str, role: &str) -> Result<()> {
         let (alias, profile, purpose, project) = {
             let s = self.st();

@@ -751,6 +751,10 @@ while IFS= read -r line; do
         *fail*)
           echo '{"type":"result","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":true,"num_turns":1,"session_id":"sid-1","result":"boom"}'
           continue ;;
+        *question*)
+          echo '{"type":"control_request","request_id":"q1","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"question":"Which color?","header":"Color","multiSelect":false,"options":[{"label":"Red","description":"warm"},{"label":"Blue","description":"cool"}]}]}}}'
+          read -r answer
+          printf '%s\n' "$answer" >> "$dir/answers.log" ;;
         *ask*)
           echo '{"type":"control_request","request_id":"p1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}'
           read -r answer
@@ -1173,4 +1177,148 @@ fn epoch_seconds_reads_numbers_and_iso_strings() {
     assert_eq!(epoch_seconds(&json!("not a time")), None);
     assert_eq!(epoch_seconds(&json!("")), None);
     assert_eq!(epoch_seconds(&Value::Null), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_answers_ask_user_question_from_the_ask_callback_not_the_approval() {
+    for (typed, behavior) in [(Some("Green"), "allow"), (None, "deny")] {
+        let temp = tempfile::tempdir().unwrap();
+        let seen: Arc<Mutex<Vec<Question>>> = Arc::default();
+        let log = Arc::clone(&seen);
+        let options = SessionOptions {
+            ask: Some(Ask(Arc::new(move |questions: &[Question]| {
+                lock(&log).extend(questions.iter().cloned());
+                typed.map(|text| vec![(questions[0].id.clone(), vec![text.to_string()])])
+            }))),
+            ..SessionOptions::default()
+        };
+        let (session, _) = claude(temp.path(), options, deny());
+        connect_retry(&session);
+        session.query("a question please").unwrap();
+        session.close().unwrap();
+        let asked = lock(&seen).clone();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(
+            (
+                asked[0].id.as_str(),
+                asked[0].header.as_str(),
+                asked[0].other
+            ),
+            ("Which color?", "Color", true)
+        );
+        assert_eq!(
+            asked[0].options,
+            [
+                ("Red".to_string(), "warm".to_string()),
+                ("Blue".to_string(), "cool".to_string())
+            ]
+        );
+        let answer = std::fs::read_to_string(temp.path().join("answers.log")).unwrap();
+        assert!(
+            answer.contains(&format!(r#""behavior":"{behavior}""#)),
+            "{answer}"
+        );
+        if behavior == "allow" {
+            assert!(
+                answer.contains(r#""answers":{"Which color?":"Green"}"#),
+                "{answer}"
+            );
+            assert!(answer.contains(r#""questions":[{"#), "{answer}");
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_answers_request_user_input_and_turns_the_feature_on() {
+    let temp = tempfile::tempdir().unwrap();
+    let body = r#"
+printf '%s\n' "$*" > "$0.args"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -E 's/^\{"id":([0-9]+),.*$/\1/')
+  case "$line" in
+    *'"method":"initialize"'*) echo "{\"id\":$id,\"result\":{}}" ;;
+    *'"method":"account/rateLimits/read"'*) echo "{\"id\":$id,\"error\":{\"message\":\"nope\"}}" ;;
+    *'"method":"thread/start"'*) echo "{\"id\":$id,\"result\":{\"thread\":{\"id\":\"t\"}}}" ;;
+    *'"method":"turn/start"'*)
+      echo "{\"id\":$id,\"result\":{}}"
+      echo '{"id":7,"method":"item/tool/requestUserInput","params":{"threadId":"t","turnId":"u","itemId":"i","isBlocking":false,"questions":[{"id":"color","header":"Color","question":"Which color?","isOther":true,"isSecret":false,"options":[{"label":"Red","description":"warm"}]}]}}' ;;
+    *'"id":7,'*)
+      printf '%s\n' "$line" > "$0.answer"
+      echo '{"method":"turn/completed","params":{"turn":{"status":"completed"}}}' ;;
+  esac
+done
+"#;
+    let program = fake::script(temp.path(), "fake_codex", body);
+    let (emit, _) = recorder();
+    let seen: Arc<Mutex<Vec<Question>>> = Arc::default();
+    let log = Arc::clone(&seen);
+    let options = SessionOptions {
+        ask: Some(Ask(Arc::new(move |questions: &[Question]| {
+            lock(&log).extend(questions.iter().cloned());
+            Some(vec![("color".to_string(), vec!["Green".to_string()])])
+        }))),
+        ..SessionOptions::default()
+    };
+    let session = CodexSession::new(temp.path(), json!({}), options, emit, deny());
+    session.set_program(&program);
+    connect_retry(&session);
+    session.query("go").unwrap();
+    session.close().unwrap();
+    let asked = lock(&seen).clone();
+    assert_eq!(
+        (
+            asked[0].id.as_str(),
+            asked[0].question.as_str(),
+            asked[0].other,
+            asked[0].multi
+        ),
+        ("color", "Which color?", true, false)
+    );
+    let answer = std::fs::read_to_string(format!("{}.answer", program.display())).unwrap();
+    assert!(
+        answer.contains(r#""result":{"answers":{"color":{"answers":["Green"]}}}"#),
+        "{answer}"
+    );
+    let args = std::fs::read_to_string(format!("{}.args", program.display())).unwrap();
+    assert!(
+        args.contains("-c features.default_mode_request_user_input=true"),
+        "{args}"
+    );
+}
+
+#[test]
+fn question_parsing_covers_both_providers() {
+    let codex = codex_questions(&json!({"questions": [
+        {"id": "name", "header": "Name", "question": "Your name?", "isSecret": true},
+    ]}));
+    assert_eq!(
+        codex,
+        [Question {
+            id: "name".into(),
+            header: "Name".into(),
+            question: "Your name?".into(),
+            other: true, // No options: only a typed answer fits.
+            secret: true,
+            ..Question::default()
+        }]
+    );
+    let claude = claude_questions(&json!({"questions": [
+        {"question": "Which?", "multiSelect": true, "options": [{"label": "A"}, "B"]},
+        {"header": "no question text"},
+    ]}));
+    assert_eq!(claude.len(), 1);
+    assert!(claude[0].multi);
+    assert_eq!(
+        claude[0].options,
+        [
+            ("A".to_string(), String::new()),
+            ("B".to_string(), String::new())
+        ]
+    );
+    match claude_answer(&json!({"questions": []}), None) {
+        PermissionResult::Deny { message } => assert!(message.contains("dismissed")),
+        other => panic!("{other:?}"),
+    }
 }

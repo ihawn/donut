@@ -51,16 +51,18 @@ pub static URL: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Each mode talks to the model of the role with the same key.
 pub const ROLE_TITLES: &[(&str, &str)] = &[
+    ("solo", "soloist"),
+    ("review", "reviewer"),
     ("plan", "planner"),
     ("work", "worker"),
-    ("review", "reviewer"),
-    ("solo", "soloist"),
+    ("orch", "orchestrator"),
 ];
 pub const ROLE_COMMANDS: &[(&str, &str)] = &[
+    ("solo", "/soloist"),
+    ("review", "/reviewer"),
     ("plan", "/planner"),
     ("work", "/worker"),
-    ("review", "/reviewer"),
-    ("solo", "/soloist"),
+    ("orch", "/orchestrator"),
 ];
 
 /// The title of a role, or the role itself when unknown.
@@ -84,6 +86,9 @@ pub fn mode_placeholder(mode: &str) -> &'static str {
             "Ask the reviewer to check something (it reads, never edits), or type / for commands"
         }
         "solo" => "Ask the soloist anything or tell it what to change, or type / for commands",
+        "orch" => {
+            "Say what to get done: the orchestrator plans it and runs workers, or type / for commands"
+        }
         _ => "Describe what to plan, or type / for commands",
     }
 }
@@ -93,6 +98,7 @@ pub fn mode_badge(mode: &str) -> Color {
         "plan" => ORANGE,
         "work" => CORAL,
         "review" => NAVY,
+        "orch" => CORAL,
         _ => TEAL,
     }
 }
@@ -182,6 +188,8 @@ pub const COMPLEX_COMMANDS: &[&str] = &[
     "/worker",
     "/reviewer",
     "/soloist",
+    "/orchestrate",
+    "/orchestrator",
     "/handholding",
     "/session",
     "/next",
@@ -195,6 +203,14 @@ pub const NEEDS_MODEL: &[&str] = &[
 
 pub const COMMANDS: &[(&str, &str)] = &[
     (
+        "/solo",
+        "Solo mode: talk to the soloist directly, like Claude Code",
+    ),
+    (
+        "/review",
+        "Review mode: ask the reviewer to check code; it reads, never edits",
+    ),
+    (
         "/plan",
         "Plan mode: describe work and the planner writes tickets",
     ),
@@ -203,20 +219,20 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "Run tickets with the worker, one fresh context each",
     ),
     (
-        "/review",
-        "Review mode: ask the reviewer to check code; it reads, never edits",
+        "/orchestrate",
+        "Orchestrate mode: the orchestrator plans as it goes and runs as many workers as it needs",
     ),
-    (
-        "/solo",
-        "Solo mode: talk to the soloist directly, like Claude Code",
-    ),
-    ("/planner", "Choose the planner's account and model"),
-    ("/worker", "Choose the worker's account and model"),
+    ("/soloist", "Choose the soloist's account and model"),
     (
         "/reviewer",
         "Choose who reviews: same as planner, any model, or off",
     ),
-    ("/soloist", "Choose the soloist's account and model"),
+    ("/planner", "Choose the planner's account and model"),
+    ("/worker", "Choose the worker's account and model"),
+    (
+        "/orchestrator",
+        "Choose the orchestrator's account and model",
+    ),
     (
         "/handholding",
         "How small and spelled-out the planner makes tickets: low, medium or high (for weak workers)",
@@ -292,6 +308,14 @@ pub const COMMANDS: &[(&str, &str)] = &[
     (
         "/chrome",
         "Claude models use the Claude in Chrome browser tools by default (/chrome off removes them)",
+    ),
+    (
+        "/ponytail-options",
+        "Ponytail's level, its review, audit, debt, gain and help commands, and its band",
+    ),
+    (
+        "/harness",
+        "Run the current mode's model in Claude Code or Codex, whatever its provider (auto: its own)",
     ),
     (
         "/login",
@@ -978,6 +1002,15 @@ pub fn markdown(source: &str) -> Vec<RichLine> {
 // Commands and names
 
 /// What follows --work on the command line for a /work choice such as "next all parallel 3 checkpoint".
+/// N from the orchestrator's last `DONUT-WORKERS: N` line, if it wrote one.
+pub fn orchestrator_workers(reply: &str) -> Option<usize> {
+    reply.lines().rev().find_map(|line| {
+        let line = line.trim().trim_matches('`').trim();
+        let rest = line.strip_prefix("DONUT-WORKERS:")?;
+        rest.trim().trim_matches('`').trim().parse().ok()
+    })
+}
+
 pub fn work_arguments(choice: &str) -> Result<Vec<String>, String> {
     let usage = "Use /work next COUNT [parallel N] [checkpoint] [no-pr] (COUNT is a positive integer or all).";
     let mut words: Vec<String> = choice.split_whitespace().map(str::to_string).collect();
@@ -1472,6 +1505,32 @@ pub fn save_pasted_image(ext: &str, data: &[u8]) -> std::io::Result<String> {
 }
 
 /// Python's `shlex.quote`.
+/// What the draft and transcript show for the Nth pasted image (1-based).
+pub fn image_label(n: usize) -> String {
+    format!("[screenshot{n}]")
+}
+
+/// The text to send: each `[screenshotN]` label becomes image N's quoted path. Unknown labels stay as typed.
+pub fn expand_images(text: &str, images: &[String]) -> String {
+    images
+        .iter()
+        .enumerate()
+        .rev()
+        .fold(text.to_string(), |text, (at, path)| {
+            text.replace(&image_label(at + 1), &quote_path(path))
+        })
+}
+
+/// The reverse of expand_images, for showing a sent message: each known quoted path becomes its label.
+pub fn label_images(text: &str, images: &[String]) -> String {
+    images
+        .iter()
+        .enumerate()
+        .fold(text.to_string(), |text, (at, path)| {
+            text.replace(&quote_path(path), &image_label(at + 1))
+        })
+}
+
 pub fn quote_path(path: &str) -> String {
     let safe = |c: char| c.is_ascii_alphanumeric() || "@%+=:,./-_".contains(c);
     if !path.is_empty() && path.chars().all(safe) {
@@ -1640,6 +1699,28 @@ mod tests {
             let (ext, data) = pasted_image(&text).unwrap();
             assert_eq!((ext.as_str(), &data[..4]), ("png", &b"\x89PNG"[..]));
         }
+    }
+
+    #[test]
+    fn test_image_labels_expand_to_paths_and_back() {
+        let images = vec!["/tmp/a.png".to_string(), "/tmp/shot two.png".to_string()];
+        let sent = expand_images(
+            "see [screenshot2] and [screenshot1], not [screenshot3]",
+            &images,
+        );
+        assert_eq!(
+            sent,
+            "see '/tmp/shot two.png' and /tmp/a.png, not [screenshot3]"
+        );
+        assert_eq!(
+            label_images(&sent, &images),
+            "see [screenshot2] and [screenshot1], not [screenshot3]"
+        );
+        let many: Vec<String> = (1..=12).map(|n| format!("/tmp/{n}.png")).collect();
+        assert_eq!(
+            expand_images("[screenshot12] [screenshot1]", &many),
+            "/tmp/12.png /tmp/1.png"
+        );
     }
 
     #[test]
